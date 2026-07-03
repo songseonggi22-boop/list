@@ -1,0 +1,9 @@
+teamboard.db
+*.bat
+node_modules/
+package.json
+main.js
+character.html
+index.html
+.bkit/
+.claude/
