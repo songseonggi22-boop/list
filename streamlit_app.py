@@ -4,61 +4,50 @@ from datetime import date, datetime
 
 DB = "salesdb.db"
 
-DEFAULT_FIXED = [
-    "아침 루틴 확인", "미확인 문자 회신",
-    "전화 확인", "일일 보고 작성", "전달사항 확인",
-]
-
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
 def get_db():
     c = sqlite3.connect(DB, check_same_thread=False)
     c.executescript("""
-    CREATE TABLE IF NOT EXISTS fixed_items(
+    CREATE TABLE IF NOT EXISTS tasks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL, order_num INTEGER DEFAULT 0);
-
-    CREATE TABLE IF NOT EXISTS daily_checks(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fixed_id INTEGER NOT NULL, check_date TEXT NOT NULL,
-        UNIQUE(fixed_id, check_date));
-
-    CREATE TABLE IF NOT EXISTS adhoc_tasks(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL, is_done INTEGER DEFAULT 0,
-        task_date TEXT NOT NULL, created_at INTEGER DEFAULT 0);
+        title TEXT NOT NULL,
+        category TEXT DEFAULT '주중업무',
+        task_date TEXT DEFAULT '',
+        is_done INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT 0);
 
     CREATE TABLE IF NOT EXISTS consultations(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL, sched_date TEXT NOT NULL,
         sched_time TEXT DEFAULT '', expected_revenue INTEGER DEFAULT 0,
-        note TEXT DEFAULT '', created_at INTEGER DEFAULT 0);
+        created_at INTEGER DEFAULT 0);
     """)
-    if c.execute("SELECT COUNT(*) FROM fixed_items").fetchone()[0] == 0:
-        for i, t in enumerate(DEFAULT_FIXED):
-            c.execute("INSERT INTO fixed_items(title,order_num) VALUES(?,?)", (t, i))
     c.commit()
     return c
 
-def q(sql, args=()):  return get_db().execute(sql, args).fetchall()
-def run(sql, args=()):get_db().execute(sql, args); get_db().commit()
+def q(sql, a=()):   return get_db().execute(sql, a).fetchall()
+def run(sql, a=()):  get_db().execute(sql, a); get_db().commit()
 
-def is_checked(fid, d): return bool(q("SELECT 1 FROM daily_checks WHERE fixed_id=? AND check_date=?",(fid,d)))
-def toggle_fix(fid, d, on):
-    if on: run("INSERT OR IGNORE INTO daily_checks(fixed_id,check_date) VALUES(?,?)",(fid,d))
-    else:  run("DELETE FROM daily_checks WHERE fixed_id=? AND check_date=?",(fid,d))
-
-def get_fixed():  return q("SELECT id,title FROM fixed_items ORDER BY order_num")
-def get_adhoc(d): return q("SELECT id,title,is_done FROM adhoc_tasks WHERE task_date=? ORDER BY created_at",(d,))
-def add_adhoc(t,d): run("INSERT INTO adhoc_tasks(title,is_done,task_date,created_at) VALUES(?,0,?,?)",(t,d,int(time.time()*1000)))
-def toggle_adhoc(tid,v): run("UPDATE adhoc_tasks SET is_done=? WHERE id=?",(int(v),tid))
-def del_adhoc(tid):      run("DELETE FROM adhoc_tasks WHERE id=?",(tid,))
+def get_tasks():
+    rows = q("SELECT id,title,category,task_date,is_done FROM tasks ORDER BY is_done,created_at DESC")
+    return [dict(zip("id title category task_date is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue,note FROM consultations ORDER BY sched_date,sched_time")
-    return [dict(zip("id name sched_date sched_time expected_revenue note".split(),r)) for r in rows]
-def add_consult(name,d,t,rev,note): run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,note,created_at) VALUES(?,?,?,?,?,?)",(name,d,t,rev,note,int(time.time()*1000)))
-def del_consult(cid): run("DELETE FROM consultations WHERE id=?",(cid,))
+    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue FROM consultations ORDER BY sched_date,sched_time")
+    return [dict(zip("id name sched_date sched_time expected_revenue".split(), r)) for r in rows]
+
+def add_task(title, cat, d):
+    run("INSERT INTO tasks(title,category,task_date,is_done,created_at) VALUES(?,?,?,0,?)",
+        (title, cat, d, int(time.time()*1000)))
+
+def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
+def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
+
+def add_consult(name, d, t, rev):
+    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,created_at) VALUES(?,?,?,?,?)",
+        (name, d, t, rev, int(time.time()*1000)))
+def del_consult(cid): run("DELETE FROM consultations WHERE id=?", (cid,))
 
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
@@ -68,33 +57,23 @@ def fdate(iso):
 
 def gen_text(type_, **k):
     nd, nt = fdate(k.get("nd","")), k.get("nt","")
-    ns = k.get("ns","")
-    nts = k.get("nts","")
+    ns, nts = k.get("ns",""), k.get("nts","")
     ns_full = f"{ns}/{nts}" if nts else ns
-    nfee = k.get("nfee", 0)
-    od, ot = fdate(k.get("od","")), k.get("ot","")
-    os_ = k.get("os_","")
-    ofee = k.get("ofee", 0)
+    nfee, ofee = k.get("nfee",0), k.get("ofee",0)
+    od, ot, os_ = fdate(k.get("od","")), k.get("ot",""), k.get("os_","")
 
-    if type_ == "신규":
-        return f"미배정 -> {nd} {nt} {ns_full} 배정"
-
+    if type_ == "신규":    return f"미배정 -> {nd} {nt} {ns_full} 배정"
     if type_ == "과목변경":
         if ofee or nfee:
             diff = abs(nfee - ofee)
-            diff_txt = f"\n[차액 {diff:,}원 무시]" if diff > 0 else ""
-            return (f"미배정 {os_} (수강료:{ofee:,}원) -> {nd} {nt} {ns_full} "
-                    f"(수강료:{nfee:,}원) 과목변경 배정{diff_txt}")
+            sfx  = f"\n[차액 {diff:,}원 무시]" if diff else ""
+            return f"미배정 {os_} (수강료:{ofee:,}원) -> {nd} {nt} {ns_full} (수강료:{nfee:,}원) 과목변경 배정{sfx}"
         return f"미배정 {os_} -> {nd} {nt} {ns_full} 과목변경 배정"
+    if type_ == "취소":    return f"{od} {ot} {os_} 배정 -> 미배정"
+    if type_ == "날짜변경": return f"{od} {ot} {os_} 배정 -> {nd} {nt} {os_} 배정"
 
-    if type_ == "취소":
-        return f"{od} {ot} {os_} 배정 -> 미배정"
-
-    if type_ == "날짜변경":
-        return f"{od} {ot} {os_} 배정 -> {nd} {nt} {os_} 배정"
-
-# ── 앱 설정 ───────────────────────────────────────────────────
-st.set_page_config(page_title="영업 대시보드", page_icon="📊",
+# ── 페이지 설정 ───────────────────────────────────────────────
+st.set_page_config(page_title="업무 대시보드", page_icon="📊",
                    layout="wide", initial_sidebar_state="collapsed")
 
 ss = st.session_state
@@ -104,287 +83,289 @@ today     = date.today()
 today_str = today.isoformat()
 now_str   = datetime.now().strftime("%H:%M")
 wd        = ["월","화","수","목","금","토","일"][today.weekday()]
+yr, mo    = today.year, today.month
 
-# ── CSS ───────────────────────────────────────────────────────
-st.markdown("""<style>
-#MainMenu,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important}
-.block-container{padding:1.6rem 2rem 3rem!important;max-width:100%!important}
-[data-testid="stAppViewContainer"],.main{background:#F1F5F9!important}
+# ── 데이터 로드 ────────────────────────────────────────────────
+tasks    = get_tasks()
+consults = get_consults()
+today_c  = [c for c in consults if c["sched_date"] == today_str]
 
-[data-testid="stButton"]>button{
-  padding:5px 14px!important;font-size:12px!important;border-radius:7px!important;
-  font-weight:500!important;min-height:0!important;line-height:1.5!important;
-  border:1.5px solid #E2E8F0!important;background:white!important;color:#475569!important}
-[data-testid="stButton"]>button:hover{background:#F8FAFC!important;color:#1E293B!important}
-[data-testid="stForm"]{border:none!important;padding:0!important}
-.stTextInput input,.stTextArea textarea{
-  border-radius:8px!important;border:1.5px solid #E2E8F0!important;
-  font-size:13px!important;background:white!important}
-.stSelectbox>div>div,.stDateInput input,.stNumberInput input{
-  border-radius:8px!important;border:1.5px solid #E2E8F0!important;font-size:13px!important}
-.stCheckbox label{font-size:13px!important;color:#374151!important}
-div[data-testid="stHorizontalBlock"]{gap:1rem!important}
-[data-testid="stExpander"]{border:1.5px solid #E2E8F0!important;border-radius:10px!important;background:white!important}
-hr{margin:.6rem 0!important;border-color:#F1F5F9!important}
-</style>""", unsafe_allow_html=True)
-
-# ── 데이터 ───────────────────────────────────────────────────
-fixed_items = get_fixed()
-adhoc_tasks = get_adhoc(today_str)
-consults    = get_consults()
-today_c     = [c for c in consults if c["sched_date"] == today_str]
-today_rev   = sum(c["expected_revenue"] for c in today_c)
-total_rev   = sum(c["expected_revenue"] for c in consults)
-fix_done    = sum(1 for fi in fixed_items if is_checked(fi[0], today_str))
-ad_done     = sum(1 for t in adhoc_tasks if t[2])
-chk_total   = len(fixed_items) + len(adhoc_tasks)
-chk_done    = fix_done + ad_done
-
-# ── 헤더 ─────────────────────────────────────────────────────
-h1, h2 = st.columns([3, 1])
-h1.markdown(f"""
-<div style='padding:2px 0 18px'>
-  <div style='font-size:26px;font-weight:800;color:#0F172A;letter-spacing:-.5px'>📊 영업 대시보드</div>
-  <div style='font-size:13px;color:#94A3B8;margin-top:4px;font-weight:500'>
-    {today.strftime('%Y년 %m월 %d일')} ({wd}요일)
-  </div>
-</div>""", unsafe_allow_html=True)
-h2.markdown(f"""
-<div style='text-align:right;padding-top:4px'>
-  <div style='font-size:46px;font-weight:200;color:#0F172A;letter-spacing:6px;font-family:monospace'>{now_str}</div>
-</div>""", unsafe_allow_html=True)
-
-# ── 요약 카드 4개 ─────────────────────────────────────────────
-for col, (label, val, color, emo) in zip(st.columns(4), [
-    ("오늘 상담",    f"{len(today_c)}건",      "#4F46E5", "📅"),
-    ("오늘 예정매출", f"{today_rev:,}원",       "#059669", "💰"),
-    ("업무 완료",    f"{chk_done}/{chk_total}", "#D97706", "✅"),
-    ("전체 예정매출", f"{total_rev:,}원",       "#DC2626", "📈"),
-]):
-    col.markdown(f"""
-<div style='background:white;border-radius:12px;padding:16px 20px;
-            border:1px solid #E2E8F0;border-top:3px solid {color}'>
-  <div style='font-size:11px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.5px'>{emo} {label}</div>
-  <div style='font-size:28px;font-weight:800;color:#0F172A;margin-top:5px'>{val}</div>
-</div>""", unsafe_allow_html=True)
-
-st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-
-# ── 메인 2컬럼 ────────────────────────────────────────────────
-left, right = st.columns([1, 1.5], gap="medium")
-
-# ─── 왼쪽: 체크리스트 ─────────────────────────────────────────
-with left:
-    st.markdown("""<div style='background:white;border-radius:12px;border:1px solid #E2E8F0;
-    padding:18px 18px 6px'><div style='font-size:14px;font-weight:700;color:#0F172A;
-    margin-bottom:12px'>✅ 업무 체크리스트</div></div>""", unsafe_allow_html=True)
-
-    # 고정 항목
-    for fid, ftitle in fixed_items:
-        chk = is_checked(fid, today_str)
-        c1, c2 = st.columns([0.1, 1])
-        new = c1.checkbox("", value=chk, key=f"f{fid}")
-        if new != chk:
-            toggle_fix(fid, today_str, new); st.rerun()
-        sty = "text-decoration:line-through;color:#CBD5E1" if chk else "color:#374151"
-        c2.markdown(f"<div style='font-size:13px;{sty};padding-top:6px'>{ftitle}</div>",
-                    unsafe_allow_html=True)
-
-    st.divider()
-
-    # 오늘 추가 항목
-    st.markdown("<div style='font-size:11px;font-weight:700;color:#94A3B8;margin-bottom:6px'>오늘 추가 할 일</div>",
-                unsafe_allow_html=True)
-    for tid, ttitle, tdone in adhoc_tasks:
-        c1, c2, c3 = st.columns([0.1, 1, 0.1])
-        new = c1.checkbox("", value=bool(tdone), key=f"a{tid}")
-        if new != bool(tdone):
-            toggle_adhoc(tid, new); st.rerun()
-        sty = "text-decoration:line-through;color:#CBD5E1" if tdone else "color:#374151"
-        c2.markdown(f"<div style='font-size:13px;{sty};padding-top:6px'>{ttitle}</div>",
-                    unsafe_allow_html=True)
-        if c3.button("✕", key=f"ad{tid}"):
-            del_adhoc(tid); st.rerun()
-
-    with st.form("adhoc_f", clear_on_submit=True):
-        nc = st.columns([1, 0.28])
-        newtask = nc[0].text_input("", placeholder="할 일 추가...", label_visibility="collapsed")
-        if nc[1].form_submit_button("추가", use_container_width=True) and newtask.strip():
-            add_adhoc(newtask.strip(), today_str); st.rerun()
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-
-# ─── 오른쪽: 상담 일정 ─────────────────────────────────────────
-with right:
-    st.markdown("""<div style='background:white;border-radius:12px;border:1px solid #E2E8F0;
-    padding:18px 18px 6px'><div style='font-size:14px;font-weight:700;color:#0F172A;
-    margin-bottom:8px'>📅 상담 일정</div></div>""", unsafe_allow_html=True)
-
-    # 오늘 상담 하이라이트
-    if today_c:
-        st.markdown(f"<div style='font-size:11px;font-weight:700;color:#4F46E5;margin:6px 0 6px'>🔵 오늘 상담 {len(today_c)}건 · 예정 {today_rev:,}원</div>",
-                    unsafe_allow_html=True)
-        for c in today_c:
-            st.markdown(f"""
-<div style='background:#EEF2FF;border-left:3px solid #4F46E5;border-radius:6px;
-            padding:8px 14px;margin-bottom:5px;display:flex;justify-content:space-between'>
-  <span style='font-size:13px;font-weight:700;color:#3730A3'>{c['name']}</span>
-  <span style='font-size:12px;color:#6366F1'>{c['sched_time']}</span>
-  <span style='font-size:12px;font-weight:600;color:#4F46E5'>{c['expected_revenue']:,}원</span>
-</div>""", unsafe_allow_html=True)
-
-    st.divider()
-
-    # 전체 목록
-    if consults:
-        st.markdown("<div style='font-size:11px;font-weight:700;color:#94A3B8;margin-bottom:8px'>전체 상담 목록</div>",
-                    unsafe_allow_html=True)
-        for c in consults:
-            is_td = c["sched_date"] == today_str
-            is_past = c["sched_date"] < today_str
-            dc = "#4F46E5" if is_td else ("#94A3B8" if is_past else "#374151")
-            cc = st.columns([1.4, 0.9, 1.1, 0.15])
-            cc[0].markdown(f"<div style='font-size:13px;font-weight:600;color:#0F172A;padding-top:4px'>{c['name']}</div>",
-                           unsafe_allow_html=True)
-            cc[1].markdown(f"<div style='font-size:12px;color:{dc};padding-top:4px'>{c['sched_date'][5:]} {c['sched_time']}</div>",
-                           unsafe_allow_html=True)
-            cc[2].markdown(f"<div style='font-size:12px;font-weight:600;color:#059669;padding-top:4px'>{c['expected_revenue']:,}원</div>",
-                           unsafe_allow_html=True)
-            if cc[3].button("✕", key=f"dc{c['id']}"):
-                del_consult(c["id"]); st.rerun()
-    else:
-        st.markdown("<div style='text-align:center;padding:20px;color:#CBD5E1;font-size:12px'>등록된 상담 없음</div>",
-                    unsafe_allow_html=True)
-
-    with st.expander("＋ 상담 추가"):
-        with st.form("cf", clear_on_submit=True):
-            r1 = st.columns(2)
-            cname = r1[0].text_input("이름 *")
-            cdate = r1[1].date_input("날짜 *", value=today)
-            r2 = st.columns(2)
-            ctime = r2[0].text_input("시간", placeholder="14:00")
-            crev  = r2[1].number_input("예정매출 (원)", min_value=0, step=10000)
-            cnote = st.text_input("메모", placeholder="선택사항")
-            if st.form_submit_button("저장 ✓", type="primary", use_container_width=True) and cname.strip():
-                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), cnote)
-                st.rerun()
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-
-st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
-# ── 달력 ──────────────────────────────────────────────────────
-st.markdown("""<div style='background:white;border-radius:12px;border:1px solid #E2E8F0;
-padding:20px 20px 16px'><div style='font-size:14px;font-weight:700;color:#0F172A;
-margin-bottom:14px'>🗓️ 이번 달 상담 일정</div>""", unsafe_allow_html=True)
-
-yr, mo = today.year, today.month
+# 달력용 이벤트 맵
 cmap = {}
 for c in consults:
     if c["sched_date"][:7] == f"{yr:04d}-{mo:02d}":
         d = int(c["sched_date"][8:])
-        cmap.setdefault(d, []).append(c["name"])
+        cmap.setdefault(d, []).append((c["name"], c["expected_revenue"]))
 
-day_hdr = ["월","화","수","목","금","토","일"]
-html = "<table style='width:100%;border-collapse:collapse;table-layout:fixed'><tr>"
-for i, dl in enumerate(day_hdr):
-    clr = "#EF4444" if i==6 else ("#3B82F6" if i==5 else "#64748B")
-    html += f"<th style='padding:6px 2px;font-size:11px;font-weight:700;color:{clr};text-align:center;border-bottom:2px solid #F1F5F9'>{dl}</th>"
-html += "</tr>"
+# ── CSS (사용자 HTML 기반) ─────────────────────────────────────
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
-for week in cal_lib.monthcalendar(yr, mo):
-    html += "<tr>"
-    for wi, day in enumerate(week):
-        if day == 0:
-            html += "<td style='height:56px;padding:3px'></td>"; continue
-        is_td  = day == today.day
-        is_sun = wi == 6
-        is_sat = wi == 5
-        num_c  = "white" if is_td else ("#EF4444" if is_sun else ("#3B82F6" if is_sat else "#374151"))
-        bg     = "#4F46E5" if is_td else "transparent"
-        events = cmap.get(day, [])
-        dots = "".join(f"<span style='display:inline-block;width:5px;height:5px;border-radius:50%;background:{'rgba(255,255,255,.85)' if is_td else '#4F46E5'};margin-right:2px'></span>" for _ in events[:3])
-        names = "".join(f"<div style='font-size:9px;color:{'rgba(255,255,255,.9)' if is_td else '#4F46E5'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'>{n}</div>" for n in events[:2])
-        html += f"""<td style='padding:3px;vertical-align:top;border:1px solid #F8FAFC'>
-<div style='background:{bg};border-radius:7px;padding:4px 5px;min-height:52px'>
-  <div style='font-size:12px;font-weight:{"800" if is_td else "500"};color:{num_c};margin-bottom:2px'>{day}</div>
-  {dots}{names}
-</div></td>"""
-    html += "</tr>"
-html += "</table>"
-st.markdown(html, unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
+#MainMenu,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important}
+.block-container{padding:.8rem 1.8rem 2rem!important;max-width:100%!important}
+[data-testid="stAppViewContainer"],.main{background:#f8f9fa!important}
 
-st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+:root{
+  --bg:#f8f9fa;--card:#fff;--tx:#333;--sub:#666;--bd:#eaeaea;
+  --p1:#fff0f0;--p1t:#ff5b5b;
+  --p2:#fff5e6;--p2t:#ff9f43;
+  --p3:#f0f7ff;--p3t:#2f80ed;
+}
+*{font-family:'Noto Sans KR',sans-serif}
+
+/* Streamlit 버튼 */
+[data-testid="stButton"]>button{
+  padding:3px 10px!important;font-size:11px!important;border-radius:5px!important;
+  font-weight:500!important;min-height:0!important;line-height:1.5!important;
+  border:1px solid var(--bd)!important;background:transparent!important;color:var(--sub)!important}
+[data-testid="stButton"]>button:hover{background:#f0f0f0!important}
+[data-testid="stCheckbox"] label{font-size:11px!important;color:var(--sub)!important}
+[data-testid="stCheckbox"]>label>div:first-child{width:13px!important;height:13px!important;border-radius:3px!important}
+[data-testid="stForm"]{border:none!important;padding:0!important}
+.stTextInput input,.stSelectbox>div>div,.stDateInput input,.stNumberInput input{
+  border-radius:7px!important;border:1.5px solid var(--bd)!important;font-size:12px!important;background:#fff!important}
+[data-testid="stExpander"]{border:1.5px solid var(--bd)!important;border-radius:10px!important;background:#fff!important}
+div[data-testid="stHorizontalBlock"]{gap:.8rem!important}
+hr{margin:.3rem 0!important;border-color:#f0f0f0!important}
+
+/* 공통 카드 */
+.db-card{background:var(--card);border-radius:16px;padding:22px;
+         box-shadow:0 4px 12px rgba(0,0,0,0.03);border:1px solid var(--bd)}
+.db-card-title{font-size:16px;font-weight:700;color:var(--tx);
+               display:flex;align-items:center;gap:7px;margin-bottom:16px}
+
+/* 달력 */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);
+          border-top:1px solid var(--bd);border-left:1px solid var(--bd);
+          border-radius:0 0 8px 8px;overflow:hidden}
+.cal-head{background:#fdfdfd;padding:8px 4px;text-align:center;font-weight:700;
+          font-size:12px;border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);color:var(--sub)}
+.cal-day{min-height:82px;padding:6px;border-right:1px solid var(--bd);
+         border-bottom:1px solid var(--bd);background:#fff;vertical-align:top}
+.cal-day.td{background:#f5f3ff}
+.cal-num{font-size:12px;font-weight:500;margin-bottom:3px;display:inline-block;
+         width:21px;height:21px;line-height:21px;text-align:center;border-radius:50%}
+.cal-num.td{background:#4f46e5;color:#fff!important}
+.ci{font-size:9px;padding:2px 5px;border-radius:4px;margin-bottom:2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;display:block}
+.ci1{background:var(--p1);color:var(--p1t)}.ci2{background:var(--p2);color:var(--p2t)}.ci3{background:var(--p3);color:var(--p3t)}
+
+/* 칸반 */
+.k-head{font-size:12px;font-weight:700;padding:5px 11px;border-radius:6px;display:inline-block;margin-bottom:10px}
+.kp1{background:var(--p1);color:var(--p1t)}.kp2{background:var(--p2);color:var(--p2t)}.kp3{background:var(--p3);color:var(--p3t)}
+.t-card{background:#fff;border:1px solid var(--bd);border-radius:10px;
+        padding:12px;margin-bottom:4px;box-shadow:0 2px 6px rgba(0,0,0,0.02);
+        transition:transform .15s}
+.t-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.05)}
+.t-date{font-size:11px;color:var(--sub);margin-bottom:4px}
+.t-title{font-size:13px;font-weight:500;line-height:1.45;color:var(--tx)}
+.t-title.done{text-decoration:line-through;color:#bbb}
+</style>""", unsafe_allow_html=True)
+
+# ── 헤더 ─────────────────────────────────────────────────────
+st.markdown(f"""
+<div style='display:flex;justify-content:space-between;align-items:center;
+            padding-bottom:14px;border-bottom:2px solid #eaeaea;margin-bottom:20px'>
+  <h1 style='font-size:22px;font-weight:700;color:#333'>
+    <span style='color:#4f46e5'>■</span> 업무 및 일정 관리 대시보드
+  </h1>
+  <div style='font-size:13px;color:#666'>
+    {today.strftime('%Y년 %m월 %d일')} ({wd}요일)
+    &nbsp;<span style='font-size:22px;font-weight:200;font-family:monospace;color:#333'>{now_str}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+# ── 메인 2컬럼 ────────────────────────────────────────────────
+left, right = st.columns([1.05, 1.35], gap="medium")
+
+# ── LEFT: 달력 ───────────────────────────────────────────────
+with left:
+    ci_cls = ["ci1","ci2","ci3"]
+    day_clr = [None,None,None,None,None,"#2f80ed","#ff5b5b"]
+
+    rows_html = ""
+    for week in cal_lib.monthcalendar(yr, mo):
+        rows_html += "<tr style='display:contents'>"
+        for wi, day in enumerate(week):
+            if day == 0:
+                rows_html += '<div class="cal-day" style="background:#fafafa"></div>'; continue
+            is_td   = day == today.day
+            td_cls  = " td" if is_td else ""
+            nc      = "td" if is_td else ""
+            dc      = day_clr[wi]
+            nstyle  = f"color:{dc}" if dc and not is_td else ""
+            events  = cmap.get(day, [])
+            evhtml  = "".join(
+                f'<span class="ci {ci_cls[i%3]}">{e[0]}</span>'
+                for i,e in enumerate(events[:3])
+            )
+            rows_html += f"""
+<div class="cal-day{td_cls}">
+  <span class="cal-num {nc}" style="{nstyle}">{day}</span>
+  {evhtml}
+</div>"""
+
+    st.markdown(f"""
+<div class="db-card">
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:14px'>
+    <div class="db-card-title" style="margin:0">🗓️ 캘린더 일정</div>
+    <div style='font-size:13px;font-weight:600;color:#666'>{yr}년 {mo}월</div>
+  </div>
+  <div class="cal-grid">
+    <div class="cal-head">월</div><div class="cal-head">화</div>
+    <div class="cal-head">수</div><div class="cal-head">목</div>
+    <div class="cal-head">금</div>
+    <div class="cal-head" style="color:#2f80ed">토</div>
+    <div class="cal-head" style="color:#ff5b5b">일</div>
+    {rows_html}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # 상담 추가 폼
+    with st.expander("＋ 상담 일정 추가"):
+        with st.form("cf", clear_on_submit=True):
+            r1 = st.columns(2)
+            cname = r1[0].text_input("이름 *")
+            cdate = r1[1].date_input("날짜", value=today)
+            r2 = st.columns(2)
+            ctime = r2[0].text_input("시간", placeholder="14:00")
+            crev  = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
+            if st.form_submit_button("저장", use_container_width=True) and cname.strip():
+                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev)); st.rerun()
+
+    # 오늘 상담
+    if today_c:
+        st.markdown("<div style='margin-top:10px;font-size:11px;font-weight:700;color:#4f46e5'>🔵 오늘 상담</div>",
+                    unsafe_allow_html=True)
+        for c in today_c:
+            cc1, cc2 = st.columns([1, 0.13])
+            cc1.markdown(f"""
+<div style='background:#eef2ff;border-left:3px solid #4f46e5;border-radius:6px;
+            padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center'>
+  <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']}</span>
+  <span style='font-size:11px;color:#6366f1'>{c['sched_time']}</span>
+  <span style='font-size:11px;font-weight:700;color:#4f46e5'>{c['expected_revenue']:,}원</span>
+</div>""", unsafe_allow_html=True)
+            if cc2.button("✕", key=f"dc{c['id']}"):
+                del_consult(c["id"]); st.rerun()
+
+# ── RIGHT: 칸반 TO DO LIST ────────────────────────────────────
+with right:
+    st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
+
+    CATS = [
+        ("우선순위1","우선순위 1","kp1"),
+        ("우선순위2","우선순위 2","kp2"),
+        ("주중업무", "주중업무",  "kp3"),
+    ]
+    k1, k2, k3 = st.columns(3, gap="small")
+
+    for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
+        with col_w:
+            st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
+
+            cat_tasks = [t for t in tasks if t["category"] == cat_key]
+            if not cat_tasks:
+                st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
+                            unsafe_allow_html=True)
+
+            for t in cat_tasks:
+                is_done   = bool(t["is_done"])
+                d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
+                tc        = "done" if is_done else ""
+
+                st.markdown(f"""
+<div class="t-card">
+  {'<div class="t-date">'+d_display+'</div>' if d_display else ''}
+  <div class="t-title {tc}">{t['title']}</div>
+</div>""", unsafe_allow_html=True)
+
+                c1, c2 = st.columns([2.5, 0.8])
+                new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
+                if new_done != is_done:
+                    toggle_task(t["id"], new_done); st.rerun()
+                if c2.button("✕", key=f"d{t['id']}"):
+                    del_task(t["id"]); st.rerun()
+
+            # 할 일 추가 폼
+            with st.form(f"af_{cat_key}", clear_on_submit=True):
+                new_title = st.text_input("", placeholder="＋ 새 페이지",
+                                          label_visibility="collapsed", key=f"ti_{cat_key}")
+                nd_val = st.date_input("날짜", value=today,
+                                       label_visibility="collapsed", key=f"nd_{cat_key}")
+                if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
+                    add_task(new_title.strip(), cat_key, nd_val.isoformat()); st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # ── 시간표 배정 자동화 ─────────────────────────────────────────
-st.markdown("""<div style='background:white;border-radius:12px;border:1px solid #E2E8F0;
-padding:20px 20px 8px'><div style='font-size:14px;font-weight:700;color:#0F172A'>📋 시간표 배정 자동화</div>
-<div style='font-size:12px;color:#94A3B8;margin-top:3px;margin-bottom:16px'>
-정보 입력 → 배정 문구 자동 생성 후 복사</div></div>""", unsafe_allow_html=True)
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">📋 시간표 배정 자동화</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    정보 입력 → 배정 문구 자동 생성 후 복사
+  </div>
+</div>""", unsafe_allow_html=True)
 
-gtype = st.selectbox("배정 유형 선택", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
+gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
-
 result = ""
 
 if gtype == "신규 배정":
-    with st.form("g1", clear_on_submit=False):
+    with st.form("g1"):
         c1,c2,c3,c4 = st.columns(4)
-        nd   = c1.date_input("날짜 *", value=today)
-        nt   = c2.text_input("시간 *", placeholder="12:00")
-        ns   = c3.text_input("과목명 *", placeholder="스케치업2")
-        nts  = c4.text_input("시간대", placeholder="주말  /  평일")
+        nd  = c1.date_input("날짜*", value=today)
+        nt  = c2.text_input("시간*", placeholder="12:00")
+        ns  = c3.text_input("과목명*", placeholder="스케치업2")
+        nts = c4.text_input("시간대", placeholder="주말")
         if st.form_submit_button("✨ 문구 생성", use_container_width=True):
             result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
 
 elif gtype == "과목변경 배정":
-    with st.form("g2", clear_on_submit=False):
-        st.markdown("<div style='font-size:11px;color:#94A3B8;margin-bottom:4px'>▸ 이전</div>", unsafe_allow_html=True)
+    with st.form("g2"):
+        st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전</div>", unsafe_allow_html=True)
         c1,c2 = st.columns(2)
         os_  = c1.text_input("이전 과목명", placeholder="캐드2")
-        ofee = c2.number_input("이전 수강료 (0=없음)", min_value=0, step=10000)
-        st.markdown("<div style='font-size:11px;color:#94A3B8;margin:8px 0 4px'>▸ 변경 후</div>", unsafe_allow_html=True)
+        ofee = c2.number_input("이전 수강료(0=없음)", min_value=0, step=10000)
+        st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후</div>", unsafe_allow_html=True)
         c3,c4,c5,c6 = st.columns(4)
-        nd   = c3.date_input("날짜 *", value=today)
-        nt   = c4.text_input("시간 *", placeholder="19:00")
-        ns   = c5.text_input("과목명 *", placeholder="실내건축이론1")
-        nts  = c6.text_input("시간대", placeholder="주말")
-        c7,c8 = st.columns(2)
-        nfee = c8.number_input("새 수강료 (0=없음)", min_value=0, step=10000)
+        nd  = c3.date_input("날짜*", value=today)
+        nt  = c4.text_input("시간*", placeholder="19:00")
+        ns  = c5.text_input("과목명*", placeholder="실내건축이론1")
+        nts = c6.text_input("시간대", placeholder="주말")
+        nfee = st.number_input("새 수강료(0=없음)", min_value=0, step=10000)
         if st.form_submit_button("✨ 문구 생성", use_container_width=True):
             result = gen_text("과목변경", os_=os_, ofee=int(ofee),
                               nd=nd.isoformat(), nt=nt, ns=ns, nts=nts, nfee=int(nfee))
 
 elif gtype == "배정 취소":
-    with st.form("g3", clear_on_submit=False):
+    with st.form("g3"):
         c1,c2,c3 = st.columns(3)
-        od  = c1.date_input("날짜 *", value=today)
-        ot  = c2.text_input("시간 *", placeholder="19:00")
-        os_ = c3.text_input("과목명 *", placeholder="실내건축이론1")
+        od  = c1.date_input("날짜*", value=today)
+        ot  = c2.text_input("시간*", placeholder="19:00")
+        os_ = c3.text_input("과목명*", placeholder="실내건축이론1")
         if st.form_submit_button("✨ 문구 생성", use_container_width=True):
             result = gen_text("취소", od=od.isoformat(), ot=ot, os_=os_)
 
 elif gtype == "날짜변경 배정":
-    with st.form("g4", clear_on_submit=False):
-        st.markdown("<div style='font-size:11px;color:#94A3B8;margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
+    with st.form("g4"):
+        st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전</div>", unsafe_allow_html=True)
         c1,c2,c3 = st.columns(3)
         od  = c1.date_input("날짜", value=today, key="od")
         ot  = c2.text_input("시간", placeholder="19:00", key="ot")
         os_ = c3.text_input("과목명", placeholder="캐드2")
-        st.markdown("<div style='font-size:11px;color:#94A3B8;margin:8px 0 4px'>▸ 새 일정</div>", unsafe_allow_html=True)
-        c4,c5 = st.columns([1,1])
+        st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 새 일정</div>", unsafe_allow_html=True)
+        c4,c5 = st.columns(2)
         nd = c4.date_input("날짜", value=today, key="nd")
         nt = c5.text_input("시간", placeholder="19:00", key="nt")
         if st.form_submit_button("✨ 문구 생성", use_container_width=True):
             result = gen_text("날짜변경", od=od.isoformat(), ot=ot, os_=os_,
                               nd=nd.isoformat(), nt=nt)
 
-if result:
-    ss.assign_out = result
-
+if result: ss.assign_out = result
 if ss.assign_out:
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    st.text_area("📋 생성된 배정 문구 (전체 선택 후 복사)", value=ss.assign_out, height=90)
+    st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=80)
     if st.button("🗑 초기화"):
         ss.assign_out = ""; st.rerun()
-
-st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
