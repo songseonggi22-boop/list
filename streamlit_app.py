@@ -327,6 +327,45 @@ def get_log(d):
          new_row["rep2_name"], new_row["ddaz_den"], new_row["month_target"]))
     return new_row
 
+# ── 구글 시트 백업 (주기적 백업용, DB는 여전히 sqlite) ───────────
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+@st.cache_resource
+def get_sheets_client():
+    if not hasattr(st, "secrets") or "gcp_service_account" not in st.secrets:
+        return None
+    from google.oauth2.service_account import Credentials
+    import gspread
+    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SHEETS_SCOPES)
+    return gspread.authorize(creds)
+
+def backup_to_sheets():
+    import gspread
+    client = get_sheets_client()
+    sheet_id = st.secrets.get("SHEETS_SPREADSHEET_ID", "") if hasattr(st, "secrets") else ""
+    if not client or not sheet_id:
+        raise RuntimeError("구글 시트 백업 설정이 안 되어 있어요 (Secrets에 gcp_service_account / SHEETS_SPREADSHEET_ID 확인).")
+    sh = client.open_by_key(sheet_id)
+
+    def write_sheet(name, headers, rows):
+        try:
+            ws = sh.worksheet(name)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=name, rows=max(100, len(rows) + 10), cols=max(10, len(headers)))
+        ws.clear()
+        ws.update([headers] + [[str(v) for v in row] for row in rows])
+
+    tasks_ = get_tasks()
+    write_sheet("tasks", ["id", "title", "category", "task_date", "assignee", "is_done"],
+                [[t["id"], t["title"], t["category"], t["task_date"], t["assignee"], t["is_done"]] for t in tasks_])
+
+    consults_ = get_consults()
+    write_sheet("consultations", ["id", "name", "sched_date", "sched_time", "expected_revenue", "ctype"],
+                [[c["id"], c["name"], c["sched_date"], c["sched_time"], c["expected_revenue"], c["ctype"]] for c in consults_])
+
+    logs_ = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log ORDER BY log_date")
+    write_sheet("daily_log", LOG_COLS, [list(r) for r in logs_])
+
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
     if not iso: return ""
@@ -367,6 +406,14 @@ workday = (today - timedelta(days=1)).isoformat() if now_kst.hour < 6 else today
 if get_state("last_task_reset") != workday:
     run("UPDATE tasks SET is_done=0")
     set_state("last_task_reset", workday)
+
+# 하루 한 번 자동 구글시트 백업 (설정 안 돼있으면 조용히 건너뜀)
+if get_state("last_sheets_backup") != today_str and get_sheets_client():
+    try:
+        backup_to_sheets()
+        set_state("last_sheets_backup", today_str)
+    except Exception:
+        pass  # 다음 로드 때 다시 시도
 
 # ── 데이터 로드 ────────────────────────────────────────────────
 tasks    = get_tasks()
@@ -895,3 +942,27 @@ with t2:
 with t3:
     st.text_area("마감보고 (직접 수정 가능)", value=close_default, height=320,
                  key=f"rt_close_{rt_seq}", label_visibility="collapsed")
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+# ── 구글 시트 백업 ────────────────────────────────────────────
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">☁️ 구글 시트 백업</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    하루 한 번 자동으로 상담·할일·일지 데이터를 백업합니다. DB는 그대로 sqlite를 씁니다.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+if not get_sheets_client():
+    st.caption("아직 설정 안 됨 — Streamlit Secrets에 gcp_service_account / SHEETS_SPREADSHEET_ID를 추가하세요.")
+else:
+    last_backup = get_state("last_sheets_backup", "없음")
+    st.caption(f"마지막 백업: {last_backup}")
+    if st.button("지금 백업하기"):
+        try:
+            backup_to_sheets()
+            set_state("last_sheets_backup", today_str)
+            st.success("백업 완료!")
+        except Exception as e:
+            st.error(f"백업 실패: {e}")
