@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json
+import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io
 import pandas as pd
 from datetime import date, datetime, timedelta
 
@@ -678,10 +678,22 @@ with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 �
 
 with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)"):
     st.caption("AI가 이미지를 읽어서 추출하는 거라 100% 정확하진 않아요. 채워진 값을 확인하고 쓰세요.")
-    img = st.file_uploader("시간표 이미지", type=["png", "jpg", "jpeg"], key="tt_img_upl")
-    if img and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
+
+    from streamlit_paste_button import paste_image_button
+    paste_result = paste_image_button("📋 클립보드에서 붙여넣기", key="tt_img_paste")
+    img = st.file_uploader("또는 파일로 업로드", type=["png", "jpg", "jpeg"], key="tt_img_upl")
+
+    image_bytes, mime_type = None, "image/png"
+    if paste_result.image_data is not None:
+        buf = io.BytesIO()
+        paste_result.image_data.save(buf, format="PNG")
+        image_bytes = buf.getvalue()
+    elif img:
+        image_bytes, mime_type = img.getvalue(), img.type
+
+    if image_bytes and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
         try:
-            st.session_state["tt_img_results"] = parse_timetable_image(img.getvalue(), img.type)
+            st.session_state["tt_img_results"] = parse_timetable_image(image_bytes, mime_type)
         except Exception as e:
             st.session_state["tt_img_results"] = []
             st.error(f"인식 실패: {e}")
