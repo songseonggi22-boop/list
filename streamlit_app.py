@@ -151,7 +151,7 @@ cmap = {}
 for c in consults:
     if c["sched_date"][:7] == f"{yr:04d}-{mo:02d}":
         d = int(c["sched_date"][8:])
-        cmap.setdefault(d, []).append((c["name"], c["expected_revenue"]))
+        cmap.setdefault(d, []).append(c)
 
 # ── CSS (사용자 HTML 기반) ─────────────────────────────────────
 st.markdown("""<style>
@@ -239,6 +239,14 @@ with left:
     ci_cls = ["ci1","ci2","ci3"]
     day_clr = [None,None,None,None,None,"#2f80ed","#ff5b5b"]
 
+    def pill_html(c, cls):
+        rev = f"{c['expected_revenue']//10000}만" if c["expected_revenue"] >= 10000 \
+              else (f"{c['expected_revenue']}원" if c["expected_revenue"] else "")
+        sub = " ".join(x for x in [c["sched_time"], rev] if x)
+        tip = f"{c['name']} {c['sched_time']} {c['expected_revenue']:,}원 ({c['ctype']})"
+        return f"""<span class="ci {cls}" title="{tip}">
+<b>{c['name']}</b>{' · '+sub if sub else ''}</span>"""
+
     rows_html = ""
     for week in cal_lib.monthcalendar(yr, mo):
         rows_html += "<tr style='display:contents'>"
@@ -252,7 +260,7 @@ with left:
             nstyle  = f"color:{dc}" if dc and not is_td else ""
             events  = cmap.get(day, [])
             evhtml  = "".join(
-                f'<span class="ci {ci_cls[i%3]}">{e[0]}</span>'
+                pill_html(e, ci_cls[i%3])
                 for i,e in enumerate(events[:3])
             )
             rows_html += f"""
