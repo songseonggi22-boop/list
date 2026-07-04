@@ -230,7 +230,7 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL, sched_date TEXT NOT NULL,
         sched_time TEXT DEFAULT '', expected_revenue INTEGER DEFAULT 0,
-        ctype TEXT DEFAULT '단과',
+        ctype TEXT DEFAULT '단과', assignee TEXT DEFAULT '',
         created_at INTEGER DEFAULT 0);
 
     CREATE TABLE IF NOT EXISTS daily_log(
@@ -262,6 +262,11 @@ def get_db():
         c.commit()
     except sqlite3.OperationalError:
         pass  # 이미 있음
+    try:
+        c.execute("ALTER TABLE consultations ADD COLUMN assignee TEXT DEFAULT ''")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
     return c
 
 # ponytail: global lock, connection pooling if concurrent traffic becomes a bottleneck
@@ -289,8 +294,8 @@ def get_tasks():
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue,ctype FROM consultations ORDER BY sched_date,sched_time")
-    return [dict(zip("id name sched_date sched_time expected_revenue ctype".split(), r)) for r in rows]
+    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee FROM consultations ORDER BY sched_date,sched_time")
+    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee".split(), r)) for r in rows]
 
 def add_task(title, cat, d, assignee):
     run("INSERT INTO tasks(title,category,task_date,assignee,is_done,created_at) VALUES(?,?,?,?,0,?)",
@@ -299,9 +304,9 @@ def add_task(title, cat, d, assignee):
 def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
 def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
 
-def add_consult(name, d, t, rev, ctype):
-    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,created_at) VALUES(?,?,?,?,?,?)",
-        (name, d, t, rev, ctype, int(time.time()*1000)))
+def add_consult(name, d, t, rev, ctype, assignee):
+    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,assignee,created_at) VALUES(?,?,?,?,?,?,?)",
+        (name, d, t, rev, ctype, assignee, int(time.time()*1000)))
 def del_consult(cid): run("DELETE FROM consultations WHERE id=?", (cid,))
 
 # ── 일지(daily_log): 자동계산 외 수동 항목 저장 ────────────────────
@@ -596,8 +601,9 @@ with left:
             ctime  = r2[0].text_input("시간", placeholder="14:00")
             crev   = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
             ctype  = r2[2].selectbox("구분", ["단과", "정규"])
+            cassignee = st.text_input("담당자", placeholder="담당자")
             if st.form_submit_button("저장", use_container_width=True) and cname.strip():
-                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype); st.rerun()
+                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype, cassignee.strip()); st.rerun()
 
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
@@ -690,6 +696,43 @@ with right:
                             add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+# ── 담당자별 실적 집계 ─────────────────────────────────────────
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">📊 담당자별 실적</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    상담 일정에 등록된 담당자 기준으로 집계합니다.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+period = st.radio("기간", ["오늘", "이번 주", "이번 달", "전체"], horizontal=True, label_visibility="collapsed")
+if period == "오늘":
+    period_consults = [c for c in consults if c["sched_date"] == today_str]
+elif period == "이번 주":
+    week_start = (today - timedelta(days=today.weekday())).isoformat()
+    period_consults = [c for c in consults if week_start <= c["sched_date"] <= today_str]
+elif period == "이번 달":
+    month_start = today.replace(day=1).isoformat()
+    period_consults = [c for c in consults if month_start <= c["sched_date"] <= today_str]
+else:
+    period_consults = consults
+
+perf = {}
+for c in period_consults:
+    who = c["assignee"] or "미지정"
+    p = perf.setdefault(who, {"건수": 0, "예정매출": 0, "정규": 0, "단과": 0})
+    p["건수"] += 1
+    p["예정매출"] += c["expected_revenue"]
+    p[c["ctype"]] = p.get(c["ctype"], 0) + 1
+
+if perf:
+    perf_df = pd.DataFrame([{"담당자": k, **v} for k, v in perf.items()]).sort_values("예정매출", ascending=False)
+    st.dataframe(perf_df, use_container_width=True, hide_index=True)
+else:
+    st.caption("해당 기간에 상담 데이터가 없어요.")
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
