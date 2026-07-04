@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, time, calendar as cal_lib, glob, os, re, threading
+import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json
 import pandas as pd
 from datetime import date, datetime, timedelta
 
@@ -168,6 +168,34 @@ def parse_personal_timetable(file):
             parsed["start_time"] = start_time
             courses.append(parsed)
     return student, courses
+
+# ── 시간표 이미지 인식 (Gemini vision) ────────────────────────────
+@st.cache_resource
+def get_gemini_client():
+    api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
+    if not api_key:
+        return None
+    from google import genai
+    return genai.Client(api_key=api_key)
+
+def parse_timetable_image(image_bytes, mime_type):
+    client = get_gemini_client()
+    if not client:
+        raise RuntimeError("GEMINI_API_KEY가 설정되어 있지 않아요 (Streamlit Secrets 확인).")
+    from google.genai import types
+    prompt = (
+        "이 이미지는 학원 개인 시간표야. 표 안의 각 강좌 블록에서 정보를 추출해서 "
+        "JSON 배열로만 답해. 설명 문장은 절대 붙이지 마.\n"
+        '형식: [{"subject":"과목명","day_label":"월~금","start_date":"YYYY-MM-DD",'
+        '"end_date":"YYYY-MM-DD","start_time":"HH:MM"}]\n'
+        "값을 모르면 빈 문자열로 둬."
+    )
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash-lite",
+        contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt],
+    )
+    m = re.search(r"\[.*\]", resp.text.strip(), re.S)
+    return json.loads(m.group(0)) if m else []
 
 def sessions_on_date(d):
     wd = DAYS[d.weekday()]  # Mon=0..Sun=6 -> 월..일
@@ -641,6 +669,33 @@ with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 �
                     st.rerun()
         elif upl and not student:
             st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
+
+with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)"):
+    st.caption("AI가 이미지를 읽어서 추출하는 거라 100% 정확하진 않아요. 채워진 값을 확인하고 쓰세요.")
+    img = st.file_uploader("시간표 이미지", type=["png", "jpg", "jpeg"], key="tt_img_upl")
+    if img and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
+        try:
+            st.session_state["tt_img_results"] = parse_timetable_image(img.getvalue(), img.type)
+        except Exception as e:
+            st.session_state["tt_img_results"] = []
+            st.error(f"인식 실패: {e}")
+
+    img_results = st.session_state.get("tt_img_results")
+    if img_results:
+        for i, c in enumerate(img_results):
+            label = f"{c.get('start_time','')} {c.get('subject','')} [{c.get('day_label','')}] 개강 {c.get('start_date','')}"
+            if st.button(label, key=f"img_pick_{i}", use_container_width=True):
+                st.session_state["g1_nt"] = c.get("start_time", "")
+                st.session_state["g1_ns"] = c.get("subject", "")
+                st.session_state["g1_nts"] = c.get("day_label", "")
+                if c.get("start_date"):
+                    try:
+                        st.session_state["g1_nd"] = datetime.strptime(c["start_date"], "%Y-%m-%d").date()
+                    except ValueError:
+                        pass
+                st.rerun()
+    elif img_results is not None:
+        st.caption("인식된 강좌가 없어요.")
 
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
