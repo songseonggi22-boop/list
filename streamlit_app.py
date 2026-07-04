@@ -90,14 +90,12 @@ def get_timetable():
     key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
     return _load_timetable(key)
 
-def find_sessions(d, t):
+def sessions_on_date(d):
     wd = DAYS[d.weekday()]  # Mon=0..Sun=6 -> 월..일
     ds = d.isoformat()
-    out = []
-    for s in get_timetable():
-        if wd in s["days"] and s["start_date"] <= ds <= s["end_date"] and s["start_time"] <= t < s["end_time"]:
-            out.append(s)
-    return out
+    out = [s for s in get_timetable()
+           if wd in s["days"] and s["start_date"] <= ds <= s["end_date"]]
+    return sorted(out, key=lambda s: (s["start_time"], s["room"]))
 
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
@@ -498,25 +496,20 @@ st.markdown("""
   </div>
 </div>""", unsafe_allow_html=True)
 
-with st.expander("🔍 시간표에서 강좌 찾기 (신규 배정용)"):
-    pc1, pc2 = st.columns(2)
-    pick_date = pc1.date_input("날짜", value=today, key="tt_pick_date")
-    pick_time = pc2.text_input("시간", value="14:00", key="tt_pick_time")
-    if st.button("조회", key="tt_search"):
-        st.session_state["tt_results"] = find_sessions(pick_date, pick_time)
-    tt_results = st.session_state.get("tt_results")
-    if tt_results:
-        for i, s in enumerate(tt_results):
-            label = f"{s['room']} · {s['subject']} ({s['teacher']}) {s['start_time']}~{s['end_time']} [{s['day_label']}]"
+with st.expander("🔍 날짜 클릭 → 그날 시간표에서 강좌 선택 (신규 배정용)", expanded=True):
+    pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
+    day_sessions = sessions_on_date(pick_date)
+    if day_sessions:
+        for i, s in enumerate(day_sessions):
+            label = f"{s['start_time']}~{s['end_time']}  {s['room']} · {s['subject']} ({s['teacher']})"
             if st.button(label, key=f"ttpick_{i}", use_container_width=True):
                 st.session_state["g1_nd"] = pick_date
-                st.session_state["g1_nt"] = pick_time
+                st.session_state["g1_nt"] = s["start_time"]
                 st.session_state["g1_ns"] = s["subject"]
                 st.session_state["g1_nts"] = s["day_label"]
-                st.session_state.pop("tt_results", None)
                 st.rerun()
-    elif tt_results is not None:
-        st.caption("해당 시간에 진행 중인 강좌가 없어요.")
+    else:
+        st.caption("이 날짜에 진행 중인 강좌가 없어요.")
 
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
