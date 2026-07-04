@@ -680,16 +680,25 @@ with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)")
     st.caption("AI가 이미지를 읽어서 추출하는 거라 100% 정확하진 않아요. 채워진 값을 확인하고 쓰세요.")
 
     from streamlit_paste_button import paste_image_button
-    paste_result = paste_image_button("📋 클립보드에서 붙여넣기", key="tt_img_paste")
-    img = st.file_uploader("또는 파일로 업로드", type=["png", "jpg", "jpeg"], key="tt_img_upl")
+    if "tt_img_seq" not in st.session_state:
+        st.session_state["tt_img_seq"] = 0
+    seq = st.session_state["tt_img_seq"]
 
-    image_bytes, mime_type = None, "image/png"
+    paste_result = paste_image_button("📋 클립보드에서 붙여넣기", key=f"tt_img_paste_{seq}")
+    img = st.file_uploader("또는 파일로 업로드", type=["png", "jpg", "jpeg"], key=f"tt_img_upl_{seq}")
+
     if paste_result.image_data is not None:
         buf = io.BytesIO()
         paste_result.image_data.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
+        st.session_state["tt_img_bytes"] = buf.getvalue()
+        st.session_state["tt_img_mime"] = "image/png"
+        st.session_state["tt_img_seq"] += 1  # 다음 붙여넣기가 되도록 컴포넌트 재마운트
     elif img:
-        image_bytes, mime_type = img.getvalue(), img.type
+        st.session_state["tt_img_bytes"] = img.getvalue()
+        st.session_state["tt_img_mime"] = img.type
+
+    image_bytes = st.session_state.get("tt_img_bytes")
+    mime_type = st.session_state.get("tt_img_mime", "image/png")
 
     if image_bytes and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
         try:
