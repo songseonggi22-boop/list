@@ -313,10 +313,6 @@ def get_log(d):
          new_row["rep2_name"], new_row["ddaz_den"], new_row["month_target"]))
     return new_row
 
-def save_log(d, **vals):
-    sets = ",".join(f"{k}=?" for k in vals)
-    run(f"UPDATE daily_log SET {sets} WHERE log_date=?", (*vals.values(), d))
-
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
     if not iso: return ""
@@ -798,78 +794,41 @@ if ss.assign_out:
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
-# ── 영업일지 자동 생성 (달력 상담/매출 자동계산 + 수동 항목) ──────
+# ── 영업일지 자동 생성 (달력 상담/매출 자동계산, 나머지는 직접 수정) ─
 st.markdown("""
 <div class="db-card">
   <div class="db-card-title">📈 영업일지 자동 생성</div>
   <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
-    상담건수·매출은 캘린더에서 자동 계산됩니다. 나머지 수치만 입력하세요.
+    상담건수·매출은 캘린더 기준으로 자동 채워집니다. 나머지 값은 아래 칸에서 바로 수정해서 쓰세요.
   </div>
 </div>""", unsafe_allow_html=True)
 
-with st.expander("📝 일지 정보 입력 (수동 항목)"):
-    with st.form("logf"):
-        c1, c2, c3, c4 = st.columns(4)
-        team_name = c1.text_input("팀명", value=log["team_name"])
-        rep1_name = c2.text_input("담당자1(매출귀속)", value=log["rep1_name"])
-        rep1_pct  = c3.number_input("귀속%", value=log["rep1_pct"], step=5)
-        rep2_name = c4.text_input("담당자2", value=log["rep2_name"])
+if "rt_seq" not in st.session_state:
+    st.session_state["rt_seq"] = 0
+if st.button("🔄 캘린더 최신값으로 새로고침 (직접 수정한 내용은 초기화돼요)"):
+    st.session_state["rt_seq"] += 1
+    st.rerun()
+rt_seq = st.session_state["rt_seq"]
 
-        c5, c6, c7, c8 = st.columns(4)
-        rep1_call = c5.text_input("담당자1 통화시간", value=log["rep1_call"], placeholder="00:51:05")
-        rep2_call = c6.text_input("담당자2 통화시간", value=log["rep2_call"], placeholder="00:38:14")
-        done_count = c7.number_input("15시 기준 완료건", value=log["done_count"], min_value=0)
-        interview_count = c8.number_input("면접예정(건)", value=log["interview_count"], min_value=0)
+pct = round(log['month_achieved'] / log['month_target'] * 100) if log['month_target'] else 0
 
-        c9, c10, c11, c12 = st.columns(4)
-        registered   = c9.number_input("등록", value=log["registered"], min_value=0)
-        cod          = c10.number_input("COD", value=log["cod"], min_value=0)
-        unregistered = c11.number_input("미등록", value=log["unregistered"], min_value=0)
-        refund       = c12.number_input("환불(원)", value=log["refund"], min_value=0, step=10000)
-
-        c13, c14, c15, c16 = st.columns(4)
-        actual_revenue = c13.number_input("금일매출결과(원)", value=log["actual_revenue"], min_value=0, step=10000)
-        tmr_target     = c14.number_input("익일목표매출(원)", value=log["tmr_target"], min_value=0, step=10000)
-        ddaz_num       = c15.number_input("따즈아 (분자)", value=log["ddaz_num"], min_value=0)
-        ddaz_den       = c16.number_input("따즈아 (분모)", value=log["ddaz_den"], min_value=0)
-
-        c17, c18 = st.columns(2)
-        month_target   = c17.number_input(f"{today.month}월 팀목표매출(원)", value=log["month_target"], min_value=0, step=100000)
-        month_achieved = c18.number_input("현재달성매출(원)", value=log["month_achieved"], min_value=0, step=100000)
-
-        if st.form_submit_button("저장", use_container_width=True):
-            save_log(today_str, team_name=team_name, rep1_name=rep1_name, rep1_pct=int(rep1_pct),
-                      rep2_name=rep2_name, rep1_call=rep1_call, rep2_call=rep2_call,
-                      done_count=int(done_count), interview_count=int(interview_count),
-                      registered=int(registered), cod=int(cod), unregistered=int(unregistered),
-                      refund=int(refund), actual_revenue=int(actual_revenue), tmr_target=int(tmr_target),
-                      ddaz_num=int(ddaz_num), ddaz_den=int(ddaz_den),
-                      month_target=int(month_target), month_achieved=int(month_achieved))
-            st.rerun()
-
-t1, t2, t3 = st.tabs(["출근보고", "15시보고", "마감보고"])
-
-with t1:
-    st.code(f"""{log['team_name']} 영업일지({today.month:02d}.{today.day:02d})
+morning_default = f"""{log['team_name']} 영업일지({today.month:02d}.{today.day:02d})
 
 - 금일 입금예정: {today_rev // 10000}만원
 
 {today_rev // 10000}만원 / {log['rep1_name']} {log['rep1_pct']}%
 
 - 금일 상담건수 : {today_cnt}건(정규{today_reg}건/단과{today_dan}건)
-- 면접예정: {log['interview_count']}건""", language=None)
+- 면접예정: {log['interview_count']}건"""
 
-with t2:
-    st.code(f"""[{log['team_name']} 15:00 보고]
+pm3_default = f"""[{log['team_name']} 15:00 보고]
 {log['done_count']} / {today_cnt}
 익일상담 {tmr_cnt} / 익일예정 {tmr_rev // 10000}
 모레상담 {daf_cnt} / 모레예정 {daf_rev // 10000}
 익일면접 {log['interview_count']}건
-따즈아 {log['ddaz_num']} / {log['ddaz_den']}""", language=None)
+따즈아 {log['ddaz_num']} / {log['ddaz_den']}"""
 
-with t3:
-    pct = round(log['month_achieved'] / log['month_target'] * 100) if log['month_target'] else 0
-    st.code(f"""컴퓨터 {log['team_name']} 영업마감보고
+close_default = f"""컴퓨터 {log['team_name']} 영업마감보고
 
  상담 : {today_cnt}
  등록 : {log['registered']}
@@ -889,4 +848,15 @@ with t3:
 
 {today.month}월 팀목표매출 : {log['month_target']:,}
 현재달성매출 : {log['month_achieved']:,}원
-현재달성율 : {pct}%""", language=None)
+현재달성율 : {pct}%"""
+
+t1, t2, t3 = st.tabs(["출근보고", "15시보고", "마감보고"])
+with t1:
+    st.text_area("출근보고 (직접 수정 가능)", value=morning_default, height=180,
+                 key=f"rt_morning_{rt_seq}", label_visibility="collapsed")
+with t2:
+    st.text_area("15시보고 (직접 수정 가능)", value=pm3_default, height=140,
+                 key=f"rt_pm3_{rt_seq}", label_visibility="collapsed")
+with t3:
+    st.text_area("마감보고 (직접 수정 가능)", value=close_default, height=320,
+                 key=f"rt_close_{rt_seq}", label_visibility="collapsed")
