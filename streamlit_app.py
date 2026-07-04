@@ -250,6 +250,10 @@ def get_db():
     CREATE TABLE IF NOT EXISTS app_state(
         key TEXT PRIMARY KEY,
         value TEXT);
+
+    CREATE TABLE IF NOT EXISTS week_target(
+        month TEXT, week_no INTEGER, start_date TEXT, end_date TEXT, target INTEGER DEFAULT 0,
+        PRIMARY KEY (month, week_no));
     """)
     c.commit()
     try:
@@ -308,6 +312,21 @@ def add_consult(name, d, t, rev, ctype, assignee):
     run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,assignee,created_at) VALUES(?,?,?,?,?,?,?)",
         (name, d, t, rev, ctype, assignee, int(time.time()*1000)))
 def del_consult(cid): run("DELETE FROM consultations WHERE id=?", (cid,))
+
+def update_consult(cid, name, d, t, rev, ctype, assignee):
+    run("""UPDATE consultations SET name=?, sched_date=?, sched_time=?, expected_revenue=?, ctype=?, assignee=?
+           WHERE id=?""", (name, d, t, rev, ctype, assignee, cid))
+
+# ── 주차별 목표매출 ───────────────────────────────────────────
+def get_week_targets(month):
+    rows = q("SELECT week_no,start_date,end_date,target FROM week_target WHERE month=? ORDER BY week_no", (month,))
+    return {r[0]: dict(start_date=r[1], end_date=r[2], target=r[3]) for r in rows}
+
+def save_week_target(month, week_no, start_date, end_date, target):
+    run("""INSERT INTO week_target(month,week_no,start_date,end_date,target) VALUES(?,?,?,?,?)
+           ON CONFLICT(month,week_no) DO UPDATE SET
+           start_date=excluded.start_date, end_date=excluded.end_date, target=excluded.target""",
+        (month, week_no, start_date, end_date, target))
 
 # ── 일지(daily_log): 자동계산 외 수동 항목 저장 ────────────────────
 LOG_COLS = ("log_date team_name rep1_name rep1_pct rep2_name rep1_call rep2_call "
@@ -626,16 +645,39 @@ with right:
         st.markdown(f"<div style='font-size:11px;font-weight:700;color:{clr};margin:6px 0 4px'>{label}</div>",
                     unsafe_allow_html=True)
         for c in by_date[d]:
-            cc1, cc2 = st.columns([1, 0.13])
-            cc1.markdown(f"""
+            if st.session_state.get("edit_consult_id") == c["id"]:
+                with st.form(f"editcf_{c['id']}"):
+                    e1, e2 = st.columns(2)
+                    ename = e1.text_input("이름", value=c["name"])
+                    edate = e2.date_input("날짜", value=datetime.strptime(c["sched_date"], "%Y-%m-%d").date())
+                    e3, e4, e5 = st.columns(3)
+                    etime = e3.text_input("시간", value=c["sched_time"])
+                    erev  = e4.number_input("예정매출(원)", min_value=0, step=10000, value=c["expected_revenue"])
+                    ectype = e5.selectbox("구분", ["단과", "정규"], index=0 if c["ctype"] == "단과" else 1)
+                    eassignee = st.text_input("담당자", value=c["assignee"])
+                    s1, s2 = st.columns(2)
+                    if s1.form_submit_button("저장", use_container_width=True, key=f"save_ec_{c['id']}"):
+                        update_consult(c["id"], ename.strip(), edate.isoformat(), etime,
+                                       int(erev), ectype, eassignee.strip())
+                        st.session_state["edit_consult_id"] = None
+                        st.rerun()
+                    if s2.form_submit_button("취소", use_container_width=True, key=f"cancel_ec_{c['id']}"):
+                        st.session_state["edit_consult_id"] = None
+                        st.rerun()
+            else:
+                cc1, cc2, cc3 = st.columns([1, 0.13, 0.13])
+                cc1.markdown(f"""
 <div style='background:#eef2ff;border-left:3px solid #4f46e5;border-radius:6px;
             padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center'>
   <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']} <span style='font-weight:500;color:#8b8bd8'>({c['ctype']})</span></span>
   <span style='font-size:11px;color:#6366f1'>{c['sched_time']}</span>
   <span style='font-size:11px;font-weight:700;color:#4f46e5'>{c['expected_revenue']:,}원</span>
 </div>""", unsafe_allow_html=True)
-            if cc2.button("✕", key=f"dc{c['id']}"):
-                del_consult(c["id"]); st.rerun()
+                if cc2.button("✏️", key=f"ec{c['id']}"):
+                    st.session_state["edit_consult_id"] = c["id"]
+                    st.rerun()
+                if cc3.button("✕", key=f"dc{c['id']}"):
+                    del_consult(c["id"]); st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
@@ -696,6 +738,62 @@ with right:
                             add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+# ── 주차별 목표매출 ────────────────────────────────────────────
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">🎯 목표매출 설정</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    월 전체 목표와 1~4주차 목표를 직접 설정하세요. 날짜 범위는 자유롭게 조정 가능합니다.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+target_month_pick = st.date_input("기준 월", value=today, key="target_month_pick")
+target_month = target_month_pick.strftime("%Y-%m")
+_, days_in_month = cal_lib.monthrange(target_month_pick.year, target_month_pick.month)
+
+wt_saved = get_week_targets(target_month)
+total_target_saved = int(get_state(f"month_total_target_{target_month}", "0") or 0)
+DEFAULT_WEEK_RANGES = [(1, 7), (8, 14), (15, 21), (22, days_in_month)]
+
+with st.form("week_target_form"):
+    total_target = st.number_input(f"{target_month} 총 목표매출(원)", min_value=0, step=100000,
+                                    value=total_target_saved)
+    week_inputs = []
+    for wn in range(1, 5):
+        default = wt_saved.get(wn)
+        d_start, d_end = DEFAULT_WEEK_RANGES[wn - 1]
+        d_end = min(d_end, days_in_month)
+        sd_default = datetime.strptime(default["start_date"], "%Y-%m-%d").date() if default else target_month_pick.replace(day=d_start)
+        ed_default = datetime.strptime(default["end_date"], "%Y-%m-%d").date() if default else target_month_pick.replace(day=d_end)
+        tg_default = default["target"] if default else 0
+        c1, c2, c3 = st.columns(3)
+        sd = c1.date_input(f"{wn}주차 시작", value=sd_default, key=f"wt_sd_{wn}")
+        ed = c2.date_input(f"{wn}주차 종료", value=ed_default, key=f"wt_ed_{wn}")
+        tg = c3.number_input(f"{wn}주차 목표(원)", min_value=0, step=100000, value=tg_default, key=f"wt_tg_{wn}")
+        week_inputs.append((wn, sd, ed, tg))
+    if st.form_submit_button("저장", use_container_width=True):
+        set_state(f"month_total_target_{target_month}", str(int(total_target)))
+        for wn, sd, ed, tg in week_inputs:
+            save_week_target(target_month, wn, sd.isoformat(), ed.isoformat(), int(tg))
+        st.rerun()
+
+month_actual = sum(c["expected_revenue"] for c in consults if c["sched_date"][:7] == target_month)
+st.markdown(f"**{target_month} 전체 예정매출**: {month_actual:,}원 / 목표 {total_target_saved:,}원")
+if total_target_saved:
+    st.progress(min(1.0, month_actual / total_target_saved))
+
+for wn in range(1, 5):
+    info = wt_saved.get(wn)
+    if not info:
+        continue
+    wk_actual = sum(c["expected_revenue"] for c in consults
+                     if info["start_date"] <= c["sched_date"] <= info["end_date"])
+    st.markdown(f"{wn}주차 ({info['start_date']}~{info['end_date']}): {wk_actual:,}원 / 목표 {info['target']:,}원")
+    if info["target"]:
+        st.progress(min(1.0, wk_actual / info["target"]))
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
