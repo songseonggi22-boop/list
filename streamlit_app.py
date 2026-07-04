@@ -2,10 +2,12 @@ import streamlit as st
 import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io
 import pandas as pd
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 DB = "salesdb.db"
 TT_DIR = "인트라넷 시간표"
 DAYS = "월화수목금토일"
+KST = ZoneInfo("Asia/Seoul")
 
 # ── 시간표 엑셀(HTML export) 파싱 ────────────────────────────────
 CELL_RE = re.compile(
@@ -244,6 +246,10 @@ def get_db():
         ddaz_num INTEGER DEFAULT 0, ddaz_den INTEGER DEFAULT 32,
         tmr_target INTEGER DEFAULT 0,
         month_target INTEGER DEFAULT 0, month_achieved INTEGER DEFAULT 0);
+
+    CREATE TABLE IF NOT EXISTS app_state(
+        key TEXT PRIMARY KEY,
+        value TEXT);
     """)
     c.commit()
     try:
@@ -269,6 +275,14 @@ def run(sql, a=()):
     with _db_lock:
         get_db().execute(sql, a)
         get_db().commit()
+
+def get_state(key, default=None):
+    rows = q("SELECT value FROM app_state WHERE key=?", (key,))
+    return rows[0][0] if rows else default
+
+def set_state(key, value):
+    run("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value))
 
 def get_tasks():
     rows = q("SELECT id,title,category,task_date,assignee,is_done FROM tasks ORDER BY is_done,created_at DESC")
@@ -343,11 +357,16 @@ st.set_page_config(page_title="업무 대시보드", page_icon="📊",
 ss = st.session_state
 if "assign_out" not in ss: ss.assign_out = ""
 
-today     = date.today()
+now_kst   = datetime.now(KST)
+today     = now_kst.date()
 today_str = today.isoformat()
-now_str   = datetime.now().strftime("%H:%M")
-wd        = ["월","화","수","목","금","토","일"][today.weekday()]
 yr, mo    = today.year, today.month
+
+# 한국시간 06:00 기준으로 하루 업무일 판단 → 새 업무일이면 체크 초기화
+workday = (today - timedelta(days=1)).isoformat() if now_kst.hour < 6 else today_str
+if get_state("last_task_reset") != workday:
+    run("UPDATE tasks SET is_done=0")
+    set_state("last_task_reset", workday)
 
 # ── 데이터 로드 ────────────────────────────────────────────────
 tasks    = get_tasks()
@@ -441,18 +460,30 @@ hr{margin:.3rem 0!important;border-color:#f0f0f0!important}
 .t-title.done{text-decoration:line-through;color:#bbb}
 </style>""", unsafe_allow_html=True)
 
-# ── 헤더 ─────────────────────────────────────────────────────
-st.markdown(f"""
-<div style='display:flex;justify-content:space-between;align-items:center;
-            padding-bottom:14px;border-bottom:2px solid #eaeaea;margin-bottom:20px'>
-  <h1 style='font-size:22px;font-weight:700;color:#333'>
-    <span style='color:#4f46e5'>■</span> 업무 및 일정 관리 대시보드
+# ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
+st.iframe("""
+<html><body style="margin:0;background:#f8f9fa">
+<div style="font-family:'Noto Sans KR',sans-serif;display:flex;justify-content:space-between;
+            align-items:center;padding:4px 2px 14px 2px;border-bottom:2px solid #eaeaea">
+  <h1 style="font-size:22px;font-weight:700;color:#333;margin:0">
+    <span style="color:#4f46e5">■</span> 업무 및 일정 관리 대시보드
   </h1>
-  <div style='font-size:13px;color:#666'>
-    {today.strftime('%Y년 %m월 %d일')} ({wd}요일)
-    &nbsp;<span style='font-size:22px;font-weight:200;font-family:monospace;color:#333'>{now_str}</span>
-  </div>
-</div>""", unsafe_allow_html=True)
+  <div id="live-clock" style="font-size:13px;color:#666"></div>
+</div>
+<script>
+function updateClock() {
+  var now = new Date();
+  var dOpts = {timeZone:'Asia/Seoul', year:'numeric', month:'long', day:'numeric', weekday:'short'};
+  var dateStr = now.toLocaleDateString('ko-KR', dOpts);
+  var timeStr = now.toLocaleTimeString('ko-KR', {timeZone:'Asia/Seoul', hour12:false});
+  document.getElementById('live-clock').innerHTML =
+    dateStr + '&nbsp;<span style="font-size:22px;font-weight:200;font-family:monospace;color:#333">' + timeStr + '</span>';
+}
+updateClock();
+setInterval(updateClock, 1000);
+</script>
+</body></html>
+""", height=70)
 
 # ── 메인 2컬럼 ────────────────────────────────────────────────
 left, right = st.columns([1.05, 1.35], gap="medium")
@@ -555,57 +586,61 @@ with right:
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
-
-    assignees = sorted({t["assignee"] for t in tasks if t["assignee"]})
-    view = st.selectbox("보기", ["전체"] + assignees, label_visibility="collapsed")
-    view_tasks = tasks if view == "전체" else [t for t in tasks if t["assignee"] == view]
+    st.caption("매일 한국시간 06:00에 완료 체크가 초기화돼요.")
 
     CATS = [
         ("우선순위1","우선순위 1","kp1"),
         ("우선순위2","우선순위 2","kp2"),
         ("주중업무", "주중업무",  "kp3"),
     ]
-    k1, k2, k3 = st.columns(3, gap="small")
+    assignees = sorted({t["assignee"] for t in tasks if t["assignee"]})
+    groups = assignees + ["미지정"]
 
-    for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
-        with col_w:
-            st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
+    for person in groups:
+        person_tasks = [t for t in tasks if (t["assignee"] or "미지정") == person]
+        left_n = sum(1 for t in person_tasks if not t["is_done"])
+        with st.expander(f"👤 {person} ({left_n}건 남음)", expanded=True):
+            k1, k2, k3 = st.columns(3, gap="small")
 
-            cat_tasks = [t for t in view_tasks if t["category"] == cat_key]
-            if not cat_tasks:
-                st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
-                            unsafe_allow_html=True)
+            for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
+                with col_w:
+                    st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
 
-            for t in cat_tasks:
-                is_done   = bool(t["is_done"])
-                d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
-                tc        = "done" if is_done else ""
-                a_display = t["assignee"]
+                    cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
+                    if not cat_tasks:
+                        st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
+                                    unsafe_allow_html=True)
 
-                st.markdown(f"""
+                    for t in cat_tasks:
+                        is_done   = bool(t["is_done"])
+                        d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
+                        tc        = "done" if is_done else ""
+
+                        st.markdown(f"""
 <div class="t-card">
-  {'<div class="t-date">'+d_display+(' · '+a_display if a_display else '')+'</div>' if (d_display or a_display) else ''}
+  {'<div class="t-date">'+d_display+'</div>' if d_display else ''}
   <div class="t-title {tc}">{t['title']}</div>
 </div>""", unsafe_allow_html=True)
 
-                c1, c2 = st.columns([2.5, 0.8])
-                new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
-                if new_done != is_done:
-                    toggle_task(t["id"], new_done); st.rerun()
-                if c2.button("✕", key=f"d{t['id']}"):
-                    del_task(t["id"]); st.rerun()
+                        c1, c2 = st.columns([2.5, 0.8])
+                        new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
+                        if new_done != is_done:
+                            toggle_task(t["id"], new_done); st.rerun()
+                        if c2.button("✕", key=f"d{t['id']}"):
+                            del_task(t["id"]); st.rerun()
 
-            # 할 일 추가 폼
-            with st.form(f"af_{cat_key}", clear_on_submit=True):
-                new_title = st.text_input("", placeholder="＋ 새 페이지",
-                                          label_visibility="collapsed", key=f"ti_{cat_key}")
-                r = st.columns(2)
-                nd_val = r[0].date_input("날짜", value=today,
-                                       label_visibility="collapsed", key=f"nd_{cat_key}")
-                new_assignee = r[1].text_input("담당자", placeholder="담당자",
-                                       label_visibility="collapsed", key=f"as_{cat_key}")
-                if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
-                    add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
+                    # 할 일 추가 폼 (이 섹션 담당자로 자동 배정, 필요하면 수정 가능)
+                    with st.form(f"af_{person}_{cat_key}", clear_on_submit=True):
+                        new_title = st.text_input("", placeholder="＋ 새 페이지",
+                                                  label_visibility="collapsed", key=f"ti_{person}_{cat_key}")
+                        r = st.columns(2)
+                        nd_val = r[0].date_input("날짜", value=today,
+                                               label_visibility="collapsed", key=f"nd_{person}_{cat_key}")
+                        new_assignee = r[1].text_input("담당자", value=("" if person == "미지정" else person),
+                                               placeholder="담당자", label_visibility="collapsed",
+                                               key=f"as_{person}_{cat_key}")
+                        if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
+                            add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
