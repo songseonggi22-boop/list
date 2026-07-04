@@ -39,6 +39,11 @@ def get_db():
         month_target INTEGER DEFAULT 0, month_achieved INTEGER DEFAULT 0);
     """)
     c.commit()
+    try:
+        c.execute("ALTER TABLE consultations ADD COLUMN ctype TEXT DEFAULT '단과'")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
     return c
 
 def q(sql, a=()):   return get_db().execute(sql, a).fetchall()
