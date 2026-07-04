@@ -1,8 +1,103 @@
 import streamlit as st
-import sqlite3, time, calendar as cal_lib
+import sqlite3, time, calendar as cal_lib, glob, os, re
+import pandas as pd
 from datetime import date, datetime, timedelta
 
 DB = "salesdb.db"
+TT_DIR = "인트라넷 시간표"
+DAYS = "월화수목금토일"
+
+# ── 시간표 엑셀(HTML export) 파싱 ────────────────────────────────
+CELL_RE = re.compile(
+    r'^(?P<subject>.+?)\s*전체출석율\s*:\s*[\d.]+%.*?'
+    r'정원\s*:\s*(?P<cap>\d+)\((?P<enrolled>\d+)\).*?'
+    r'배정\s*:\s*(?P<assigned>\d+)(?:\(W:\d+,R:\d+\))?'
+    r'(?P<rest>.+?)'
+    r'개\s*:\s*(?P<start_date>\d{4}-\d{2}-\d{2})종\s*:\s*(?P<end_date>\d{4}-\d{2}-\d{2})\s*$'
+)
+DAY_TAIL_RE = re.compile(r'([월화수목금토일][월화수목금토일~,/]*)$')
+
+def _end_plus30(t):
+    h, m = map(int, t.split(":"))
+    m += 30
+    if m >= 60: m -= 60; h += 1
+    return f"{h:02d}:{m:02d}"
+
+def _expand_days(tok):
+    tok = tok.strip()
+    if "~" in tok:
+        a, b = tok.split("~")
+        if a in DAYS and b in DAYS:
+            i, j = DAYS.index(a), DAYS.index(b)
+            return list(DAYS[i:j+1])
+        return []
+    seen = []
+    for ch in tok:
+        if ch in DAYS and ch not in seen:
+            seen.append(ch)
+    return seen
+
+def _parse_cell(text, room, time_label):
+    m = CELL_RE.match(text.strip())
+    if not m:
+        return None
+    rest = m.group("rest")
+    dm = DAY_TAIL_RE.search(rest)
+    if not dm:
+        return None
+    day_tok = dm.group(1)
+    days = _expand_days(day_tok)
+    if not days:
+        return None
+    teacher = re.sub(r"\d+$", "", rest[:dm.start()].strip())
+    teacher = re.sub(r"^재직자\s*:\s*\d+", "", teacher).strip()
+    subject = re.sub(r"/주말$", "", m.group("subject")).strip()
+    return dict(room=room, subject=subject, teacher=teacher, days=days, day_label=day_tok,
+                start_date=m.group("start_date"), end_date=m.group("end_date"),
+                cap=int(m.group("cap")), enrolled=int(m.group("enrolled")),
+                assigned=int(m.group("assigned")), start_time=time_label)
+
+@st.cache_data
+def _load_timetable(_cache_key):
+    sessions = []
+    for path in glob.glob(os.path.join(TT_DIR, "*.xls")):
+        try:
+            df = pd.read_html(path, header=[0, 1])[0]
+        except Exception:
+            continue
+        df = df[df.iloc[:, 0] != "정원"].reset_index(drop=True)
+        times = df.iloc[:, 0].tolist()
+        for col in df.columns[1:]:
+            room = col[0]
+            vals = df[col].tolist()
+            i = 0
+            while i < len(vals):
+                v = vals[i]
+                if pd.isna(v):
+                    i += 1; continue
+                j = i
+                while j + 1 < len(vals) and vals[j + 1] == v:
+                    j += 1
+                sess = _parse_cell(str(v), room, times[i])
+                if sess:
+                    sess["end_time"] = _end_plus30(times[j])
+                    sessions.append(sess)
+                i = j + 1
+    return sessions
+
+def get_timetable():
+    files = glob.glob(os.path.join(TT_DIR, "*.xls"))
+    key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
+    return _load_timetable(key)
+
+def find_sessions(d, t):
+    wd = DAYS[d.weekday()]  # Mon=0..Sun=6 -> 월..일
+    ds = d.isoformat()
+    out = []
+    for s in get_timetable():
+        if wd in s["days"] and s["start_date"] <= ds <= s["end_date"] and s["start_time"] <= t < s["end_time"]:
+            out.append(s)
+    return out
 
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
@@ -403,6 +498,26 @@ st.markdown("""
   </div>
 </div>""", unsafe_allow_html=True)
 
+with st.expander("🔍 시간표에서 강좌 찾기 (신규 배정용)"):
+    pc1, pc2 = st.columns(2)
+    pick_date = pc1.date_input("날짜", value=today, key="tt_pick_date")
+    pick_time = pc2.text_input("시간", value="14:00", key="tt_pick_time")
+    if st.button("조회", key="tt_search"):
+        st.session_state["tt_results"] = find_sessions(pick_date, pick_time)
+    tt_results = st.session_state.get("tt_results")
+    if tt_results:
+        for i, s in enumerate(tt_results):
+            label = f"{s['room']} · {s['subject']} ({s['teacher']}) {s['start_time']}~{s['end_time']} [{s['day_label']}]"
+            if st.button(label, key=f"ttpick_{i}", use_container_width=True):
+                st.session_state["g1_nd"] = pick_date
+                st.session_state["g1_nt"] = pick_time
+                st.session_state["g1_ns"] = s["subject"]
+                st.session_state["g1_nts"] = s["day_label"]
+                st.session_state.pop("tt_results", None)
+                st.rerun()
+    elif tt_results is not None:
+        st.caption("해당 시간에 진행 중인 강좌가 없어요.")
+
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
 result = ""
@@ -410,10 +525,10 @@ result = ""
 if gtype == "신규 배정":
     with st.form("g1"):
         c1,c2,c3,c4 = st.columns(4)
-        nd  = c1.date_input("날짜*", value=today)
-        nt  = c2.text_input("시간*", placeholder="12:00")
-        ns  = c3.text_input("과목명*", placeholder="스케치업2")
-        nts = c4.text_input("시간대", placeholder="주말")
+        nd  = c1.date_input("날짜*", value=today, key="g1_nd")
+        nt  = c2.text_input("시간*", placeholder="12:00", key="g1_nt")
+        ns  = c3.text_input("과목명*", placeholder="스케치업2", key="g1_ns")
+        nts = c4.text_input("시간대", placeholder="주말", key="g1_nts")
         if st.form_submit_button("✨ 문구 생성", use_container_width=True):
             result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
 

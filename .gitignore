@@ -1,6 +1,7 @@
 teamboard.db
 salesdb.db
 __pycache__/
+인트라넷 시간표/
 *.bat
 node_modules/
 package.json
