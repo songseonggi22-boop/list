@@ -60,7 +60,8 @@ def _parse_cell(text, room, time_label):
 @st.cache_data
 def _load_timetable(_cache_key):
     sessions = []
-    for path in glob.glob(os.path.join(TT_DIR, "*.xls")):
+    room_order = []
+    for path in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
         try:
             df = pd.read_html(path, header=[0, 1])[0]
         except Exception:
@@ -69,6 +70,8 @@ def _load_timetable(_cache_key):
         times = df.iloc[:, 0].tolist()
         for col in df.columns[1:]:
             room = col[0]
+            if room not in room_order:
+                room_order.append(room)
             vals = df[col].tolist()
             i = 0
             while i < len(vals):
@@ -83,12 +86,17 @@ def _load_timetable(_cache_key):
                     sess["end_time"] = _end_plus30(times[j])
                     sessions.append(sess)
                 i = j + 1
-    return sessions
+    return sessions, room_order
 
 def get_timetable():
     files = glob.glob(os.path.join(TT_DIR, "*.xls"))
     key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
-    return _load_timetable(key)
+    return _load_timetable(key)[0]
+
+def get_room_order():
+    files = glob.glob(os.path.join(TT_DIR, "*.xls"))
+    key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
+    return _load_timetable(key)[1]
 
 def sessions_on_date(d):
     wd = DAYS[d.weekday()]  # Mon=0..Sun=6 -> 월..일
@@ -500,14 +508,29 @@ with st.expander("🔍 날짜 클릭 → 그날 시간표에서 강좌 선택 (�
     pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
     day_sessions = sessions_on_date(pick_date)
     if day_sessions:
-        for i, s in enumerate(day_sessions):
-            label = f"{s['start_time']}~{s['end_time']}  {s['room']} · {s['subject']} ({s['teacher']})"
-            if st.button(label, key=f"ttpick_{i}", use_container_width=True):
-                st.session_state["g1_nd"] = pick_date
-                st.session_state["g1_nt"] = s["start_time"]
-                st.session_state["g1_ns"] = s["subject"]
-                st.session_state["g1_nts"] = s["day_label"]
-                st.rerun()
+        by_room = {}
+        for s in day_sessions:
+            by_room.setdefault(s["room"], []).append(s)
+        rooms = [r for r in get_room_order() if r in by_room]
+
+        ROOMS_PER_ROW = 6
+        for start in range(0, len(rooms), ROOMS_PER_ROW):
+            row_rooms = rooms[start:start + ROOMS_PER_ROW]
+            cols = st.columns(len(row_rooms))
+            for col, room in zip(cols, row_rooms):
+                with col:
+                    st.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
+                                background:#eef2ff;color:#4f46e5;border-radius:6px;padding:4px;margin-bottom:6px'>
+                                {room}</div>""", unsafe_allow_html=True)
+                    for si, s in enumerate(sorted(by_room[room], key=lambda x: x["start_time"])):
+                        label = f"{s['start_time']} {s['subject']} ({s['teacher']})"
+                        key = f"ttpick_{room}_{si}"
+                        if st.button(label, key=key, use_container_width=True):
+                            st.session_state["g1_nd"] = pick_date
+                            st.session_state["g1_nt"] = s["start_time"]
+                            st.session_state["g1_ns"] = s["subject"]
+                            st.session_state["g1_nts"] = s["day_label"]
+                            st.rerun()
     else:
         st.caption("이 날짜에 진행 중인 강좌가 없어요.")
 
