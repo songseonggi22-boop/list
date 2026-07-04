@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlite3, time, calendar as cal_lib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 DB = "salesdb.db"
 
@@ -21,7 +21,22 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL, sched_date TEXT NOT NULL,
         sched_time TEXT DEFAULT '', expected_revenue INTEGER DEFAULT 0,
+        ctype TEXT DEFAULT '단과',
         created_at INTEGER DEFAULT 0);
+
+    CREATE TABLE IF NOT EXISTS daily_log(
+        log_date TEXT PRIMARY KEY,
+        team_name TEXT DEFAULT '2-3팀',
+        rep1_name TEXT DEFAULT '', rep1_pct INTEGER DEFAULT 60,
+        rep2_name TEXT DEFAULT '',
+        rep1_call TEXT DEFAULT '', rep2_call TEXT DEFAULT '',
+        done_count INTEGER DEFAULT 0,
+        registered INTEGER DEFAULT 0, cod INTEGER DEFAULT 0, unregistered INTEGER DEFAULT 0,
+        actual_revenue INTEGER DEFAULT 0, refund INTEGER DEFAULT 0,
+        interview_count INTEGER DEFAULT 0,
+        ddaz_num INTEGER DEFAULT 0, ddaz_den INTEGER DEFAULT 32,
+        tmr_target INTEGER DEFAULT 0,
+        month_target INTEGER DEFAULT 0, month_achieved INTEGER DEFAULT 0);
     """)
     c.commit()
     return c
@@ -34,8 +49,8 @@ def get_tasks():
     return [dict(zip("id title category task_date is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue FROM consultations ORDER BY sched_date,sched_time")
-    return [dict(zip("id name sched_date sched_time expected_revenue".split(), r)) for r in rows]
+    rows = q("SELECT id,name,sched_date,sched_time,expected_revenue,ctype FROM consultations ORDER BY sched_date,sched_time")
+    return [dict(zip("id name sched_date sched_time expected_revenue ctype".split(), r)) for r in rows]
 
 def add_task(title, cat, d):
     run("INSERT INTO tasks(title,category,task_date,is_done,created_at) VALUES(?,?,?,0,?)",
@@ -44,10 +59,31 @@ def add_task(title, cat, d):
 def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
 def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
 
-def add_consult(name, d, t, rev):
-    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,created_at) VALUES(?,?,?,?,?)",
-        (name, d, t, rev, int(time.time()*1000)))
+def add_consult(name, d, t, rev, ctype):
+    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,created_at) VALUES(?,?,?,?,?,?)",
+        (name, d, t, rev, ctype, int(time.time()*1000)))
 def del_consult(cid): run("DELETE FROM consultations WHERE id=?", (cid,))
+
+# ── 일지(daily_log): 자동계산 외 수동 항목 저장 ────────────────────
+LOG_COLS = ("log_date team_name rep1_name rep1_pct rep2_name rep1_call rep2_call "
+            "done_count registered cod unregistered actual_revenue refund "
+            "interview_count ddaz_num ddaz_den tmr_target month_target month_achieved").split()
+
+def get_log(d):
+    rows = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log WHERE log_date=?", (d,))
+    if rows:
+        return dict(zip(LOG_COLS, rows[0]))
+    prev = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log ORDER BY log_date DESC LIMIT 1")
+    base = dict(zip(LOG_COLS, prev[0])) if prev else {}
+    run("""INSERT INTO daily_log(log_date, team_name, rep1_name, rep1_pct, rep2_name, ddaz_den, month_target)
+           VALUES(?,?,?,?,?,?,?)""",
+        (d, base.get("team_name", "2-3팀"), base.get("rep1_name", ""), base.get("rep1_pct", 60),
+         base.get("rep2_name", ""), base.get("ddaz_den", 32), base.get("month_target", 0)))
+    return get_log(d)
+
+def save_log(d, **vals):
+    sets = ",".join(f"{k}=?" for k in vals)
+    run(f"UPDATE daily_log SET {sets} WHERE log_date=?", (*vals.values(), d))
 
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
@@ -89,6 +125,21 @@ yr, mo    = today.year, today.month
 tasks    = get_tasks()
 consults = get_consults()
 today_c  = [c for c in consults if c["sched_date"] == today_str]
+
+tomorrow_str = (today + timedelta(days=1)).isoformat()
+dayafter_str = (today + timedelta(days=2)).isoformat()
+
+def day_stats(d):
+    items = [c for c in consults if c["sched_date"] == d]
+    cnt = len(items)
+    rev = sum(c["expected_revenue"] for c in items)
+    reg = sum(1 for c in items if c["ctype"] == "정규")
+    return cnt, rev, reg, cnt - reg
+
+today_cnt, today_rev, today_reg, today_dan = day_stats(today_str)
+tmr_cnt, tmr_rev, _, _ = day_stats(tomorrow_str)
+daf_cnt, daf_rev, _, _ = day_stats(dayafter_str)
+log = get_log(today_str)
 
 # 달력용 이벤트 맵
 cmap = {}
@@ -227,30 +278,46 @@ with left:
             r1 = st.columns(2)
             cname = r1[0].text_input("이름 *")
             cdate = r1[1].date_input("날짜", value=today)
-            r2 = st.columns(2)
-            ctime = r2[0].text_input("시간", placeholder="14:00")
-            crev  = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
+            r2 = st.columns([1, 1, 1])
+            ctime  = r2[0].text_input("시간", placeholder="14:00")
+            crev   = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
+            ctype  = r2[2].selectbox("구분", ["단과", "정규"])
             if st.form_submit_button("저장", use_container_width=True) and cname.strip():
-                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev)); st.rerun()
+                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype); st.rerun()
 
-    # 오늘 상담
-    if today_c:
-        st.markdown("<div style='margin-top:10px;font-size:11px;font-weight:700;color:#4f46e5'>🔵 오늘 상담</div>",
+# ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
+with right:
+    upcoming = sorted((c for c in consults if c["sched_date"] >= today_str),
+                       key=lambda c: (c["sched_date"], c["sched_time"]))
+    by_date = {}
+    for c in upcoming:
+        by_date.setdefault(c["sched_date"], []).append(c)
+
+    st.markdown('<div class="db-card" style="margin-bottom:14px"><div class="db-card-title">🔵 상담 일정</div>',
+                unsafe_allow_html=True)
+    if not by_date:
+        st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">예정된 상담 없음</div>',
                     unsafe_allow_html=True)
-        for c in today_c:
+    for d in sorted(by_date):
+        dd  = datetime.strptime(d, "%Y-%m-%d")
+        wtag = ["월","화","수","목","금","토","일"][dd.weekday()]
+        label = f"{dd.month}월 {dd.day}일 ({wtag}){' · 오늘' if d == today_str else ''}"
+        clr = "#4f46e5" if d == today_str else "#999"
+        st.markdown(f"<div style='font-size:11px;font-weight:700;color:{clr};margin:6px 0 4px'>{label}</div>",
+                    unsafe_allow_html=True)
+        for c in by_date[d]:
             cc1, cc2 = st.columns([1, 0.13])
             cc1.markdown(f"""
 <div style='background:#eef2ff;border-left:3px solid #4f46e5;border-radius:6px;
             padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center'>
-  <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']}</span>
+  <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']} <span style='font-weight:500;color:#8b8bd8'>({c['ctype']})</span></span>
   <span style='font-size:11px;color:#6366f1'>{c['sched_time']}</span>
   <span style='font-size:11px;font-weight:700;color:#4f46e5'>{c['expected_revenue']:,}원</span>
 </div>""", unsafe_allow_html=True)
             if cc2.button("✕", key=f"dc{c['id']}"):
                 del_consult(c["id"]); st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# ── RIGHT: 칸반 TO DO LIST ────────────────────────────────────
-with right:
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
 
     CATS = [
@@ -369,3 +436,98 @@ if ss.assign_out:
     st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=80)
     if st.button("🗑 초기화"):
         ss.assign_out = ""; st.rerun()
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+# ── 영업일지 자동 생성 (달력 상담/매출 자동계산 + 수동 항목) ──────
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">📈 영업일지 자동 생성</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    상담건수·매출은 캘린더에서 자동 계산됩니다. 나머지 수치만 입력하세요.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+with st.expander("📝 일지 정보 입력 (수동 항목)"):
+    with st.form("logf"):
+        c1, c2, c3, c4 = st.columns(4)
+        team_name = c1.text_input("팀명", value=log["team_name"])
+        rep1_name = c2.text_input("담당자1(매출귀속)", value=log["rep1_name"])
+        rep1_pct  = c3.number_input("귀속%", value=log["rep1_pct"], step=5)
+        rep2_name = c4.text_input("담당자2", value=log["rep2_name"])
+
+        c5, c6, c7, c8 = st.columns(4)
+        rep1_call = c5.text_input("담당자1 통화시간", value=log["rep1_call"], placeholder="00:51:05")
+        rep2_call = c6.text_input("담당자2 통화시간", value=log["rep2_call"], placeholder="00:38:14")
+        done_count = c7.number_input("15시 기준 완료건", value=log["done_count"], min_value=0)
+        interview_count = c8.number_input("면접예정(건)", value=log["interview_count"], min_value=0)
+
+        c9, c10, c11, c12 = st.columns(4)
+        registered   = c9.number_input("등록", value=log["registered"], min_value=0)
+        cod          = c10.number_input("COD", value=log["cod"], min_value=0)
+        unregistered = c11.number_input("미등록", value=log["unregistered"], min_value=0)
+        refund       = c12.number_input("환불(원)", value=log["refund"], min_value=0, step=10000)
+
+        c13, c14, c15, c16 = st.columns(4)
+        actual_revenue = c13.number_input("금일매출결과(원)", value=log["actual_revenue"], min_value=0, step=10000)
+        tmr_target     = c14.number_input("익일목표매출(원)", value=log["tmr_target"], min_value=0, step=10000)
+        ddaz_num       = c15.number_input("따즈아 (분자)", value=log["ddaz_num"], min_value=0)
+        ddaz_den       = c16.number_input("따즈아 (분모)", value=log["ddaz_den"], min_value=0)
+
+        c17, c18 = st.columns(2)
+        month_target   = c17.number_input(f"{today.month}월 팀목표매출(원)", value=log["month_target"], min_value=0, step=100000)
+        month_achieved = c18.number_input("현재달성매출(원)", value=log["month_achieved"], min_value=0, step=100000)
+
+        if st.form_submit_button("저장", use_container_width=True):
+            save_log(today_str, team_name=team_name, rep1_name=rep1_name, rep1_pct=int(rep1_pct),
+                      rep2_name=rep2_name, rep1_call=rep1_call, rep2_call=rep2_call,
+                      done_count=int(done_count), interview_count=int(interview_count),
+                      registered=int(registered), cod=int(cod), unregistered=int(unregistered),
+                      refund=int(refund), actual_revenue=int(actual_revenue), tmr_target=int(tmr_target),
+                      ddaz_num=int(ddaz_num), ddaz_den=int(ddaz_den),
+                      month_target=int(month_target), month_achieved=int(month_achieved))
+            st.rerun()
+
+t1, t2, t3 = st.tabs(["출근보고", "15시보고", "마감보고"])
+
+with t1:
+    st.code(f"""{log['team_name']} 영업일지({today.month:02d}.{today.day:02d})
+
+- 금일 입금예정: {today_rev // 10000}만원
+
+{today_rev // 10000}만원 / {log['rep1_name']} {log['rep1_pct']}%
+
+- 금일 상담건수 : {today_cnt}건(정규{today_reg}건/단과{today_dan}건)
+- 면접예정: {log['interview_count']}건""", language=None)
+
+with t2:
+    st.code(f"""[{log['team_name']} 15:00 보고]
+{log['done_count']} / {today_cnt}
+익일상담 {tmr_cnt} / 익일예정 {tmr_rev // 10000}
+모레상담 {daf_cnt} / 모레예정 {daf_rev // 10000}
+익일면접 {log['interview_count']}건
+따즈아 {log['ddaz_num']} / {log['ddaz_den']}""", language=None)
+
+with t3:
+    pct = round(log['month_achieved'] / log['month_target'] * 100) if log['month_target'] else 0
+    st.code(f"""컴퓨터 {log['team_name']} 영업마감보고
+
+ 상담 : {today_cnt}
+ 등록 : {log['registered']}
+ COD : {log['cod']}
+ 미등록 : {log['unregistered']}
+
+금일매출결과 :{log['actual_revenue']:,}원
+환불 :{log['refund']:,}원
+
+통화시간
+{log['rep1_name']} {log['rep1_call']} (상담 {today_cnt}건)
+{log['rep2_name']} {log['rep2_call']}
+
+익일예정상담 : {tmr_cnt}건
+익일예정매출 : {tmr_rev:,}원
+익일목표매출 : {log['tmr_target']:,}원
+
+{today.month}월 팀목표매출 : {log['month_target']:,}
+현재달성매출 : {log['month_achieved']:,}원
+현재달성율 : {pct}%""", language=None)

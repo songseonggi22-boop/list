@@ -1,4 +1,6 @@
 teamboard.db
+salesdb.db
+__pycache__/
 *.bat
 node_modules/
 package.json
