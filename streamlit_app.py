@@ -98,6 +98,77 @@ def get_room_order():
     key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
     return _load_timetable(key)[1]
 
+# ── 개인 시간표(양식 xlsx) 파싱 ───────────────────────────────────
+def _parse_personal_cell(text):
+    lines = [l.strip() for l in str(text).split("\n") if l.strip()]
+    if not lines:
+        return None
+    start_date = end_date = None
+    day_tok = None
+    for l in lines:
+        m = re.match(r"^개\s*:\s*(\d{4}-\d{2}-\d{2})$", l)
+        if m: start_date = m.group(1)
+        m = re.match(r"^종\s*:\s*(\d{4}-\d{2}-\d{2})$", l)
+        if m: end_date = m.group(1)
+        dm = re.match(r"^[월화수목금토일][월화수목금토일~,/]*$", l)
+        if dm: day_tok = l
+    if not (start_date and end_date and day_tok):
+        return None
+    days = _expand_days(day_tok)
+    if not days:
+        return None
+    return dict(subject=lines[0], day_label=day_tok, days=days,
+                start_date=start_date, end_date=end_date)
+
+def parse_personal_timetable(file):
+    import openpyxl
+    wb = openpyxl.load_workbook(file, data_only=True)
+    ws = wb.active
+
+    student = ""
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                m = re.search(r"(\S+)님\s*개인\s*시간표", cell.value)
+                if m:
+                    student = m.group(1).strip()
+                    break
+        if student:
+            break
+
+    courses = []
+    rows = list(ws.iter_rows(values_only=True))
+    for row in rows:
+        cells = list(row)
+        if not cells or cells[0] == "비고":
+            continue
+        rest = [c for c in cells[1:] if c not in (None, "")]
+        if not rest:
+            continue
+        # 월 라벨 행(예: "7월","6월"만 있는 행)은 건너뜀
+        if all(isinstance(c, str) and re.match(r"^\d{1,2}월$", c) for c in rest):
+            continue
+        course_cells = [c for c in cells[1:] if isinstance(c, str) and "개:" in c]
+        if not course_cells:
+            continue
+        time_lines = []
+        if isinstance(cells[0], str):
+            time_lines = [t.strip() for t in cells[0].split("\n") if t.strip()]
+        for i, ctext in enumerate(course_cells):
+            parsed = _parse_personal_cell(ctext)
+            if not parsed:
+                continue
+            if len(time_lines) == len(course_cells):
+                tl = time_lines[i]
+            elif time_lines:
+                tl = time_lines[0]
+            else:
+                tl = ""
+            start_time = tl.split("~")[0].strip() if tl else ""
+            parsed["start_time"] = start_time
+            courses.append(parsed)
+    return student, courses
+
 def sessions_on_date(d):
     wd = DAYS[d.weekday()]  # Mon=0..Sun=6 -> 월..일
     ds = d.isoformat()
@@ -548,6 +619,28 @@ with st.expander("🔍 날짜 클릭 → 그날 시간표에서 강좌 선택 (�
                             st.rerun()
     else:
         st.caption("이 날짜에 진행 중인 강좌가 없어요.")
+
+with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 배정용)"):
+    upl = st.file_uploader("개인 시간표(xlsx)", type=["xlsx"], key="personal_tt_upl")
+    if upl:
+        try:
+            student, courses = parse_personal_timetable(upl)
+        except Exception as e:
+            student, courses = "", []
+            st.error(f"파일을 읽지 못했어요: {e}")
+        if student:
+            st.caption(f"{student}님의 시간표에서 {len(courses)}개 강좌를 찾았어요.")
+        if courses:
+            for i, c in enumerate(courses):
+                label = f"{c['start_time']} {c['subject']} [{c['day_label']}] 개강 {c['start_date']}"
+                if st.button(label, key=f"pt_pick_{i}", use_container_width=True):
+                    st.session_state["g1_nd"] = datetime.strptime(c["start_date"], "%Y-%m-%d").date()
+                    st.session_state["g1_nt"] = c["start_time"]
+                    st.session_state["g1_ns"] = c["subject"]
+                    st.session_state["g1_nts"] = c["day_label"]
+                    st.rerun()
+        elif upl and not student:
+            st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
 
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")

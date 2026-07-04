@@ -1,6 +1,8 @@
 teamboard.db
 salesdb.db
 __pycache__/
+.streamlit/secrets.toml
+★전체시간표 (양식).xlsx
 *.bat
 node_modules/
 package.json
