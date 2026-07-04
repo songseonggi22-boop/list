@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, time, calendar as cal_lib, glob, os, re
+import sqlite3, time, calendar as cal_lib, glob, os, re, threading
 import pandas as pd
 from datetime import date, datetime, timedelta
 
@@ -153,8 +153,17 @@ def get_db():
         pass  # 이미 있음
     return c
 
-def q(sql, a=()):   return get_db().execute(sql, a).fetchall()
-def run(sql, a=()):  get_db().execute(sql, a); get_db().commit()
+# ponytail: global lock, connection pooling if concurrent traffic becomes a bottleneck
+_db_lock = threading.Lock()
+
+def q(sql, a=()):
+    with _db_lock:
+        return get_db().execute(sql, a).fetchall()
+
+def run(sql, a=()):
+    with _db_lock:
+        get_db().execute(sql, a)
+        get_db().commit()
 
 def get_tasks():
     rows = q("SELECT id,title,category,task_date,assignee,is_done FROM tasks ORDER BY is_done,created_at DESC")
@@ -187,11 +196,17 @@ def get_log(d):
         return dict(zip(LOG_COLS, rows[0]))
     prev = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log ORDER BY log_date DESC LIMIT 1")
     base = dict(zip(LOG_COLS, prev[0])) if prev else {}
+    new_row = dict(log_date=d, team_name=base.get("team_name", "2-3팀"),
+                    rep1_name=base.get("rep1_name", ""), rep1_pct=base.get("rep1_pct", 60),
+                    rep2_name=base.get("rep2_name", ""), rep1_call="", rep2_call="",
+                    done_count=0, registered=0, cod=0, unregistered=0, actual_revenue=0, refund=0,
+                    interview_count=0, ddaz_num=0, ddaz_den=base.get("ddaz_den", 32),
+                    tmr_target=0, month_target=base.get("month_target", 0), month_achieved=0)
     run("""INSERT INTO daily_log(log_date, team_name, rep1_name, rep1_pct, rep2_name, ddaz_den, month_target)
            VALUES(?,?,?,?,?,?,?)""",
-        (d, base.get("team_name", "2-3팀"), base.get("rep1_name", ""), base.get("rep1_pct", 60),
-         base.get("rep2_name", ""), base.get("ddaz_den", 32), base.get("month_target", 0)))
-    return get_log(d)
+        (d, new_row["team_name"], new_row["rep1_name"], new_row["rep1_pct"],
+         new_row["rep2_name"], new_row["ddaz_den"], new_row["month_target"]))
+    return new_row
 
 def save_log(d, **vals):
     sets = ",".join(f"{k}=?" for k in vals)
