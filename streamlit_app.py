@@ -624,6 +624,11 @@ st.markdown("""
   </div>
 </div>""", unsafe_allow_html=True)
 
+candidates = []  # 체크박스로 선택된 강좌 → 아래 "선택한 강좌 배정 문구 생성"에서 일괄 처리
+if "cb_gen_seq" not in st.session_state:
+    st.session_state["cb_gen_seq"] = 0
+cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
+
 with st.expander("🔍 날짜 클릭 → 그날 시간표에서 강좌 선택 (신규 배정용)", expanded=True):
     pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
     day_sessions = sessions_on_date(pick_date)
@@ -644,13 +649,10 @@ with st.expander("🔍 날짜 클릭 → 그날 시간표에서 강좌 선택 (�
                                 {room}</div>""", unsafe_allow_html=True)
                     for si, s in enumerate(sorted(by_room[room], key=lambda x: x["start_time"])):
                         label = f"{s['start_time']} {s['subject']} ({s['teacher']})"
-                        key = f"ttpick_{room}_{si}"
-                        if st.button(label, key=key, use_container_width=True):
-                            st.session_state["g1_nd"] = pick_date
-                            st.session_state["g1_nt"] = s["start_time"]
-                            st.session_state["g1_ns"] = s["subject"]
-                            st.session_state["g1_nts"] = s["day_label"]
-                            st.rerun()
+                        key = f"ttpick_{room}_{si}_{cb_seq}"
+                        st.checkbox(label, key=key)
+                        candidates.append(dict(key=key, nd=pick_date.isoformat(),
+                                                nt=s["start_time"], ns=s["subject"], nts=s["day_label"]))
     else:
         st.caption("이 날짜에 진행 중인 강좌가 없어요.")
 
@@ -667,12 +669,10 @@ with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 �
         if courses:
             for i, c in enumerate(courses):
                 label = f"{c['start_time']} {c['subject']} [{c['day_label']}] 개강 {c['start_date']}"
-                if st.button(label, key=f"pt_pick_{i}", use_container_width=True):
-                    st.session_state["g1_nd"] = datetime.strptime(c["start_date"], "%Y-%m-%d").date()
-                    st.session_state["g1_nt"] = c["start_time"]
-                    st.session_state["g1_ns"] = c["subject"]
-                    st.session_state["g1_nts"] = c["day_label"]
-                    st.rerun()
+                key = f"pt_pick_{i}_{cb_seq}"
+                st.checkbox(label, key=key)
+                candidates.append(dict(key=key, nd=c["start_date"], nt=c["start_time"],
+                                        ns=c["subject"], nts=c["day_label"]))
         elif upl and not student:
             st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
 
@@ -700,6 +700,9 @@ with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)")
     image_bytes = st.session_state.get("tt_img_bytes")
     mime_type = st.session_state.get("tt_img_mime", "image/png")
 
+    if image_bytes:
+        st.image(image_bytes, caption="붙여넣은(또는 업로드한) 이미지", width=300)
+
     if image_bytes and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
         try:
             st.session_state["tt_img_results"] = parse_timetable_image(image_bytes, mime_type)
@@ -711,18 +714,25 @@ with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)")
     if img_results:
         for i, c in enumerate(img_results):
             label = f"{c.get('start_time','')} {c.get('subject','')} [{c.get('day_label','')}] 개강 {c.get('start_date','')}"
-            if st.button(label, key=f"img_pick_{i}", use_container_width=True):
-                st.session_state["g1_nt"] = c.get("start_time", "")
-                st.session_state["g1_ns"] = c.get("subject", "")
-                st.session_state["g1_nts"] = c.get("day_label", "")
-                if c.get("start_date"):
-                    try:
-                        st.session_state["g1_nd"] = datetime.strptime(c["start_date"], "%Y-%m-%d").date()
-                    except ValueError:
-                        pass
-                st.rerun()
+            key = f"img_pick_{i}_{cb_seq}"
+            st.checkbox(label, key=key)
+            candidates.append(dict(key=key, nd=c.get("start_date", ""), nt=c.get("start_time", ""),
+                                    ns=c.get("subject", ""), nts=c.get("day_label", "")))
     elif img_results is not None:
         st.caption("인식된 강좌가 없어요.")
+
+if candidates:
+    if st.button("✅ 체크한 강좌 배정 문구 생성 (여러 개 누적 가능)", use_container_width=True, key="gen_checked"):
+        picked = [c for c in candidates if st.session_state.get(c["key"])]
+        if picked:
+            lines = [gen_text("신규", nd=c["nd"] or today.isoformat(), nt=c["nt"], ns=c["ns"], nts=c["nts"])
+                      for c in picked]
+            new_text = "\n".join(lines)
+            ss.assign_out = (ss.assign_out + "\n" + new_text) if ss.assign_out else new_text
+            st.session_state["cb_gen_seq"] += 1  # 체크박스 전부 재마운트해 초기화 (중복 누적 방지)
+            st.rerun()
+        else:
+            st.caption("체크된 강좌가 없어요.")
 
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
@@ -781,7 +791,8 @@ elif gtype == "날짜변경 배정":
 
 if result: ss.assign_out = result
 if ss.assign_out:
-    st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=80)
+    lines_n = ss.assign_out.count("\n") + 1
+    st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=max(80, min(400, 30 * lines_n)))
     if st.button("🗑 초기화"):
         ss.assign_out = ""; st.rerun()
 
