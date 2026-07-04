@@ -14,6 +14,7 @@ def get_db():
         title TEXT NOT NULL,
         category TEXT DEFAULT '주중업무',
         task_date TEXT DEFAULT '',
+        assignee TEXT DEFAULT '',
         is_done INTEGER DEFAULT 0,
         created_at INTEGER DEFAULT 0);
 
@@ -44,22 +45,27 @@ def get_db():
         c.commit()
     except sqlite3.OperationalError:
         pass  # 이미 있음
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN assignee TEXT DEFAULT ''")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
     return c
 
 def q(sql, a=()):   return get_db().execute(sql, a).fetchall()
 def run(sql, a=()):  get_db().execute(sql, a); get_db().commit()
 
 def get_tasks():
-    rows = q("SELECT id,title,category,task_date,is_done FROM tasks ORDER BY is_done,created_at DESC")
-    return [dict(zip("id title category task_date is_done".split(), r)) for r in rows]
+    rows = q("SELECT id,title,category,task_date,assignee,is_done FROM tasks ORDER BY is_done,created_at DESC")
+    return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
 
 def get_consults():
     rows = q("SELECT id,name,sched_date,sched_time,expected_revenue,ctype FROM consultations ORDER BY sched_date,sched_time")
     return [dict(zip("id name sched_date sched_time expected_revenue ctype".split(), r)) for r in rows]
 
-def add_task(title, cat, d):
-    run("INSERT INTO tasks(title,category,task_date,is_done,created_at) VALUES(?,?,?,0,?)",
-        (title, cat, d, int(time.time()*1000)))
+def add_task(title, cat, d, assignee):
+    run("INSERT INTO tasks(title,category,task_date,assignee,is_done,created_at) VALUES(?,?,?,?,0,?)",
+        (title, cat, d, assignee, int(time.time()*1000)))
 
 def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
 def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
@@ -333,6 +339,10 @@ with right:
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
 
+    assignees = sorted({t["assignee"] for t in tasks if t["assignee"]})
+    view = st.selectbox("보기", ["전체"] + assignees, label_visibility="collapsed")
+    view_tasks = tasks if view == "전체" else [t for t in tasks if t["assignee"] == view]
+
     CATS = [
         ("우선순위1","우선순위 1","kp1"),
         ("우선순위2","우선순위 2","kp2"),
@@ -344,7 +354,7 @@ with right:
         with col_w:
             st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
 
-            cat_tasks = [t for t in tasks if t["category"] == cat_key]
+            cat_tasks = [t for t in view_tasks if t["category"] == cat_key]
             if not cat_tasks:
                 st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
                             unsafe_allow_html=True)
@@ -353,10 +363,11 @@ with right:
                 is_done   = bool(t["is_done"])
                 d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
                 tc        = "done" if is_done else ""
+                a_display = t["assignee"]
 
                 st.markdown(f"""
 <div class="t-card">
-  {'<div class="t-date">'+d_display+'</div>' if d_display else ''}
+  {'<div class="t-date">'+d_display+(' · '+a_display if a_display else '')+'</div>' if (d_display or a_display) else ''}
   <div class="t-title {tc}">{t['title']}</div>
 </div>""", unsafe_allow_html=True)
 
@@ -371,10 +382,13 @@ with right:
             with st.form(f"af_{cat_key}", clear_on_submit=True):
                 new_title = st.text_input("", placeholder="＋ 새 페이지",
                                           label_visibility="collapsed", key=f"ti_{cat_key}")
-                nd_val = st.date_input("날짜", value=today,
+                r = st.columns(2)
+                nd_val = r[0].date_input("날짜", value=today,
                                        label_visibility="collapsed", key=f"nd_{cat_key}")
+                new_assignee = r[1].text_input("담당자", placeholder="담당자",
+                                       label_visibility="collapsed", key=f"as_{cat_key}")
                 if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
-                    add_task(new_title.strip(), cat_key, nd_val.isoformat()); st.rerun()
+                    add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
