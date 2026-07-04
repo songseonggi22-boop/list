@@ -190,10 +190,16 @@ def parse_timetable_image(image_bytes, mime_type):
         '"end_date":"YYYY-MM-DD","start_time":"HH:MM"}]\n'
         "값을 모르면 빈 문자열로 둬."
     )
-    resp = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt],
-    )
+    from google.genai import errors as genai_errors
+    parts = [types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt]
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(model="gemini-2.5-flash-lite", contents=parts)
+            break
+        except genai_errors.ServerError:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))  # ponytail: fixed backoff, exponential if 503s get frequent
     m = re.search(r"\[.*\]", resp.text.strip(), re.S)
     return json.loads(m.group(0)) if m else []
 
