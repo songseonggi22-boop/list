@@ -65,6 +65,7 @@ def _parse_cell(text, room, time_label):
 @st.cache_data
 def _load_timetable(_cache_key):
     sessions = []
+    seen = set()  # 같은 강좌가 여러 스냅샷 파일에 중복 등록되는 걸 걸러냄
     for path in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
         try:
             df = pd.read_html(path, header=[0, 1])[0]
@@ -86,7 +87,11 @@ def _load_timetable(_cache_key):
                 sess = _parse_cell(str(v), room, times[i])
                 if sess:
                     sess["end_time"] = _end_plus30(times[j])
-                    sessions.append(sess)
+                    dedup_key = (sess["subject"], sess["room"], sess["teacher"], sess["day_label"],
+                                 sess["start_date"], sess["end_date"], sess["start_time"])
+                    if dedup_key not in seen:
+                        seen.add(dedup_key)
+                        sessions.append(sess)
                 i = j + 1
     return sessions
 
@@ -894,7 +899,7 @@ if "cb_gen_seq" not in st.session_state:
     st.session_state["cb_gen_seq"] = 0
 cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
 
-with st.expander("🔍 날짜 클릭 → 그날 진행 중인 강좌 선택 (신규 배정용)", expanded=True):
+with st.expander("🔍 날짜 클릭 → 그날 진행 중인 강좌 선택 (신규 배정용)", expanded=False):
     pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
     day_sessions = sessions_active_on(pick_date)
     if day_sessions:
