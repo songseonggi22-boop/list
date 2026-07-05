@@ -200,10 +200,10 @@ def parse_timetable_image(image_bytes, mime_type):
     m = re.search(r"\[.*\]", resp.text.strip(), re.S)
     return json.loads(m.group(0)) if m else []
 
-def sessions_starting_on(d):
+def sessions_active_on(d):
     ds = d.isoformat()
-    out = [s for s in get_timetable() if s["start_date"] == ds]
-    return sorted(out, key=lambda s: (s["subject"], s["start_time"]))
+    out = [s for s in get_timetable() if s["start_date"] <= ds <= s["end_date"]]
+    return sorted(out, key=lambda s: (s["start_time"], s["subject"]))
 
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
@@ -894,19 +894,45 @@ if "cb_gen_seq" not in st.session_state:
     st.session_state["cb_gen_seq"] = 0
 cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
 
-with st.expander("🔍 개강일 검색 → 그날 개강하는 강좌 선택 (신규 배정용)", expanded=True):
-    pick_date = st.date_input("개강일(개강 첫날)", value=today, key="tt_pick_date")
-    day_sessions = sessions_starting_on(pick_date)
+with st.expander("🔍 날짜 클릭 → 그날 진행 중인 강좌 선택 (신규 배정용)", expanded=True):
+    pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
+    day_sessions = sessions_active_on(pick_date)
     if day_sessions:
-        for si, s in enumerate(day_sessions):
-            weekend = _is_weekend_days(s["days"])
-            label = f"{s['subject']} — {s['start_time']} ({s['room']}, {s['teacher']})" + ("  [주말]" if weekend else "")
-            key = f"ttpick_{si}_{cb_seq}"
-            st.checkbox(label, key=key)
-            candidates.append(dict(key=key, nd=s["start_date"],
-                                    nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
+        by_time = {}
+        for s in day_sessions:
+            by_time.setdefault(s["start_time"], []).append(s)
+        si = 0
+        for t in sorted(by_time):
+            st.markdown(f"""<div style='font-size:12px;font-weight:700;color:#4f46e5;margin:8px 0 4px'>
+                        🕐 {t}</div>""", unsafe_allow_html=True)
+            for s in sorted(by_time[t], key=lambda x: x["subject"]):
+                weekend = _is_weekend_days(s["days"])
+                label = f"{s['subject']} ({s['room']}, {s['teacher']}) 개강 {s['start_date']}" + ("  [주말]" if weekend else "")
+                key = f"ttpick_{si}_{cb_seq}"
+                st.checkbox(label, key=key)
+                candidates.append(dict(key=key, nd=s["start_date"],
+                                        nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
+                si += 1
     else:
-        st.caption("이 날짜에 개강하는 강좌가 없어요.")
+        st.caption("이 날짜에 진행 중인 강좌가 없어요.")
+
+with st.expander("🔎 과목명으로 검색 (신규 배정용)"):
+    search_q = st.text_input("과목명/강사명 검색", key="tt_search_q")
+    if search_q:
+        hits = [s for s in get_timetable()
+                if search_q.strip() in s["subject"] or search_q.strip() in s["teacher"]]
+        hits = sorted(hits, key=lambda s: (s["subject"], s["start_time"]))
+        if hits:
+            for i, s in enumerate(hits):
+                weekend = _is_weekend_days(s["days"])
+                label = (f"{s['subject']} — {s['start_time']} ({s['room']}, {s['teacher']}) "
+                         f"개강 {s['start_date']}~종강 {s['end_date']}") + ("  [주말]" if weekend else "")
+                key = f"ttsearch_{i}_{cb_seq}"
+                st.checkbox(label, key=key)
+                candidates.append(dict(key=key, nd=s["start_date"],
+                                        nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
+        else:
+            st.caption("일치하는 강좌가 없어요.")
 
 with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 배정용)"):
     upl = st.file_uploader("개인 시간표(xlsx)", type=["xlsx"], key="personal_tt_upl")
