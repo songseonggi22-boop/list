@@ -1,5 +1,6 @@
 teamboard.db
 salesdb.db
+~$*.xlsx
 __pycache__/
 .streamlit/secrets.toml
 ★전체시간표 (양식).xlsx

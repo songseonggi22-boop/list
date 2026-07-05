@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 DB = "salesdb.db"
 TT_DIR = "인트라넷 시간표"
+FEE_FILE = "수강료.xlsx"
 DAYS = "월화수목금토일"
 KST = ZoneInfo("Asia/Seoul")
 
@@ -56,7 +57,7 @@ def _parse_cell(text, room, time_label):
         return None
     teacher = re.sub(r"\d+$", "", rest[:dm.start()].strip())
     teacher = re.sub(r"^재직자\s*:\s*\d+", "", teacher).strip()
-    subject = re.sub(r"/주말$", "", m.group("subject")).strip()
+    subject = re.sub(r"/(주말|격일)$", "", m.group("subject")).strip()
     return dict(room=room, subject=subject, teacher=teacher, days=days, day_label=day_tok,
                 start_date=m.group("start_date"), end_date=m.group("end_date"),
                 cap=int(m.group("cap")), enrolled=int(m.group("enrolled")),
@@ -209,6 +210,45 @@ def sessions_active_on(d):
     ds = d.isoformat()
     out = [s for s in get_timetable() if s["start_date"] <= ds <= s["end_date"]]
     return sorted(out, key=lambda s: (s["start_time"], s["subject"]))
+
+# ── 수강료표 파싱 ────────────────────────────────────────────
+def _expand_fee_name(name):
+    suffix = ""
+    base = name
+    sm = re.search(r"(\(방학\)|/주말)$", base)
+    if sm:
+        suffix = sm.group(1)
+        base = base[:sm.start()]
+    rm = re.match(r"^(.*?)(\d+)~(\d+)$", base)
+    bases = [f"{rm.group(1)}{i}" for i in range(int(rm.group(2)), int(rm.group(3)) + 1)] if rm else [base]
+    out = []
+    for b in bases:
+        parts = [p.strip() for p in b.split(",")] if "," in b else [b]
+        out.extend(p + suffix for p in parts)
+    return out
+
+@st.cache_data
+def _load_fees(_cache_key):
+    fees = {}
+    df = pd.read_excel(FEE_FILE, header=None)
+    for _, row in df.iterrows():
+        for name_col, fee_col in ((3, 4), (11, 12)):
+            name, fee = row.get(name_col), row.get(fee_col)
+            if isinstance(name, str) and isinstance(fee, (int, float)) and not pd.isna(fee):
+                for key in _expand_fee_name(name.strip()):
+                    fees[key] = int(fee)
+    return fees
+
+def lookup_fee(subject, weekend=False):
+    if not os.path.exists(FEE_FILE):
+        return None
+    fees = _load_fees(os.path.getmtime(FEE_FILE))
+    s = subject.strip()
+    if s in fees:
+        return fees[s]
+    if weekend and f"{s}/주말" in fees:
+        return fees[f"{s}/주말"]
+    return None
 
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
@@ -1019,6 +1059,24 @@ if candidates:
         else:
             st.caption("체크된 강좌가 없어요.")
 
+def _course_picker(label, key):
+    c1, c2 = st.columns([1, 2])
+    mode = c1.radio("찾기", ["날짜로", "검색으로"], key=f"{key}_mode", horizontal=True, label_visibility="collapsed")
+    if mode == "날짜로":
+        d = c2.date_input(label, value=today, key=f"{key}_date", label_visibility="collapsed")
+        opts = sessions_active_on(d)
+    else:
+        q = c2.text_input(label, key=f"{key}_q", placeholder=f"{label} 과목명 검색", label_visibility="collapsed")
+        opts = sorted([s for s in get_timetable() if q.strip() and q.strip() in s["subject"]],
+                      key=lambda s: (s["subject"], s["start_time"])) if q else []
+    if not opts:
+        st.caption("일치하는 강좌가 없어요.")
+        return None
+    labels = [f"{s['subject']} — {s['start_time']} ({s['room']}) 개강 {s['start_date']}" for s in opts]
+    idx = st.selectbox(f"{label} 강좌", range(len(opts)), format_func=lambda i: labels[i],
+                       key=f"{key}_sel", label_visibility="collapsed")
+    return opts[idx]
+
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
 result = ""
@@ -1034,45 +1092,36 @@ if gtype == "신규 배정":
             result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
 
 elif gtype == "과목변경 배정":
-    with st.form("g2"):
-        st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전</div>", unsafe_allow_html=True)
-        c1,c2 = st.columns(2)
-        os_  = c1.text_input("이전 과목명", placeholder="캐드2")
-        ofee = c2.number_input("이전 수강료(0=없음)", min_value=0, step=10000)
-        st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후</div>", unsafe_allow_html=True)
-        c3,c4,c5,c6 = st.columns(4)
-        nd  = c3.date_input("날짜*", value=today)
-        nt  = c4.text_input("시간*", placeholder="19:00")
-        ns  = c5.text_input("과목명*", placeholder="실내건축이론1")
-        nts = c6.text_input("시간대", placeholder="주말")
-        nfee = st.number_input("새 수강료(0=없음)", min_value=0, step=10000)
-        if st.form_submit_button("✨ 문구 생성", use_container_width=True):
-            result = gen_text("과목변경", os_=os_, ofee=int(ofee),
-                              nd=nd.isoformat(), nt=nt, ns=ns, nts=nts, nfee=int(nfee))
+    st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전 강좌</div>", unsafe_allow_html=True)
+    old_s = _course_picker("이전", "cg_old")
+    st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후 강좌</div>", unsafe_allow_html=True)
+    new_s = _course_picker("변경 후", "cg_new")
+    if old_s and new_s:
+        auto_ofee = lookup_fee(old_s["subject"], _is_weekend_days(old_s["days"])) or 0
+        auto_nfee = lookup_fee(new_s["subject"], _is_weekend_days(new_s["days"])) or 0
+        c1, c2 = st.columns(2)
+        ofee = c1.number_input(f"이전 수강료 (자동조회: {auto_ofee:,}원)", min_value=0, step=10000,
+                                value=auto_ofee, key="cg_ofee")
+        nfee = c2.number_input(f"변경 후 수강료 (자동조회: {auto_nfee:,}원)", min_value=0, step=10000,
+                                value=auto_nfee, key="cg_nfee")
+        if st.button("✨ 문구 생성", use_container_width=True, key="cg_gen"):
+            result = gen_text("과목변경", os_=old_s["subject"], ofee=int(ofee),
+                              nd=new_s["start_date"], nt=new_s["start_time"], ns=new_s["subject"],
+                              nts="주말" if _is_weekend_days(new_s["days"]) else "", nfee=int(nfee))
 
 elif gtype == "배정 취소":
-    with st.form("g3"):
-        c1,c2,c3 = st.columns(3)
-        od  = c1.date_input("날짜*", value=today)
-        ot  = c2.text_input("시간*", placeholder="19:00")
-        os_ = c3.text_input("과목명*", placeholder="실내건축이론1")
-        if st.form_submit_button("✨ 문구 생성", use_container_width=True):
-            result = gen_text("취소", od=od.isoformat(), ot=ot, os_=os_)
+    cancel_s = _course_picker("취소할", "cx")
+    if cancel_s and st.button("✨ 문구 생성", use_container_width=True, key="cx_gen"):
+        result = gen_text("취소", od=cancel_s["start_date"], ot=cancel_s["start_time"], os_=cancel_s["subject"])
 
 elif gtype == "날짜변경 배정":
-    with st.form("g4"):
-        st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전</div>", unsafe_allow_html=True)
-        c1,c2,c3 = st.columns(3)
-        od  = c1.date_input("날짜", value=today, key="od")
-        ot  = c2.text_input("시간", placeholder="19:00", key="ot")
-        os_ = c3.text_input("과목명", placeholder="캐드2")
-        st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 새 일정</div>", unsafe_allow_html=True)
-        c4,c5 = st.columns(2)
-        nd = c4.date_input("날짜", value=today, key="nd")
-        nt = c5.text_input("시간", placeholder="19:00", key="nt")
-        if st.form_submit_button("✨ 문구 생성", use_container_width=True):
-            result = gen_text("날짜변경", od=od.isoformat(), ot=ot, os_=os_,
-                              nd=nd.isoformat(), nt=nt)
+    st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
+    old_s = _course_picker("이전", "dc_old")
+    st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후 일정</div>", unsafe_allow_html=True)
+    new_s = _course_picker("변경 후", "dc_new")
+    if old_s and new_s and st.button("✨ 문구 생성", use_container_width=True, key="dc_gen"):
+        result = gen_text("날짜변경", od=old_s["start_date"], ot=old_s["start_time"], os_=old_s["subject"],
+                          nd=new_s["start_date"], nt=new_s["start_time"])
 
 if result: ss.assign_out = result
 if ss.assign_out:
