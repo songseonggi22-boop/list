@@ -369,6 +369,11 @@ def get_db():
     except sqlite3.OperationalError:
         pass  # 이미 있음
     try:
+        c.execute("ALTER TABLE consultations ADD COLUMN visit_type TEXT DEFAULT '신규방문'")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
+    try:
         c.execute("SELECT assignee FROM week_target LIMIT 1")
     except sqlite3.OperationalError:
         # 기존 week_target은 (month,week_no)만 PK라 assignee 컬럼을 못 넣음 → 재생성
@@ -433,9 +438,9 @@ def get_tasks():
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status
+    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status,visit_type
                 FROM consultations ORDER BY sched_date,sched_time""")
-    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status".split(), r))
+    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status visit_type".split(), r))
             for r in rows]
 
 def set_consult_status(cid, status):
@@ -448,14 +453,15 @@ def add_task(title, cat, d, assignee):
 def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
 def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
 
-def add_consult(name, d, t, rev, ctype, assignee):
-    run("INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,assignee,created_at) VALUES(?,?,?,?,?,?,?)",
-        (name, d, t, rev, ctype, assignee, int(time.time()*1000)))
+def add_consult(name, d, t, rev, ctype, assignee, visit_type="신규방문"):
+    run("""INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,assignee,visit_type,created_at)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (name, d, t, rev, ctype, assignee, visit_type, int(time.time()*1000)))
 def del_consult(cid): run("DELETE FROM consultations WHERE id=?", (cid,))
 
-def update_consult(cid, name, d, t, rev, ctype, assignee):
-    run("""UPDATE consultations SET name=?, sched_date=?, sched_time=?, expected_revenue=?, ctype=?, assignee=?
-           WHERE id=?""", (name, d, t, rev, ctype, assignee, cid))
+def update_consult(cid, name, d, t, rev, ctype, assignee, visit_type="신규방문"):
+    run("""UPDATE consultations SET name=?, sched_date=?, sched_time=?, expected_revenue=?, ctype=?, assignee=?, visit_type=?
+           WHERE id=?""", (name, d, t, rev, ctype, assignee, visit_type, cid))
 
 # ── 주차별 목표매출 (담당자별) ─────────────────────────────────
 def get_week_targets(month, assignee):
@@ -765,9 +771,10 @@ with left:
             ctime  = r2[0].text_input("시간", placeholder="14:00")
             crev   = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
             ctype  = r2[2].selectbox("구분", ["단과", "정규"])
+            cvisit = st.radio("방문 유형", ["신규방문", "재방문", "온라인"], horizontal=True)
             cassignee = st.text_input("담당자", placeholder="담당자")
             if st.form_submit_button("저장", use_container_width=True) and cname.strip():
-                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype, cassignee.strip()); st.rerun()
+                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype, cassignee.strip(), cvisit); st.rerun()
 
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
@@ -799,11 +806,14 @@ with right:
                     etime = e3.text_input("시간", value=c["sched_time"])
                     erev  = e4.number_input("예정매출(원)", min_value=0, step=10000, value=c["expected_revenue"])
                     ectype = e5.selectbox("구분", ["단과", "정규"], index=0 if c["ctype"] == "단과" else 1)
+                    visit_opts = ["신규방문", "재방문", "온라인"]
+                    evisit = st.radio("방문 유형", visit_opts, horizontal=True,
+                                       index=visit_opts.index(c["visit_type"]) if c["visit_type"] in visit_opts else 0)
                     eassignee = st.text_input("담당자", value=c["assignee"])
                     s1, s2 = st.columns(2)
                     if s1.form_submit_button("저장", use_container_width=True, key=f"save_ec_{c['id']}"):
                         update_consult(c["id"], ename.strip(), edate.isoformat(), etime,
-                                       int(erev), ectype, eassignee.strip())
+                                       int(erev), ectype, eassignee.strip(), evisit)
                         st.session_state["edit_consult_id"] = None
                         st.rerun()
                     if s2.form_submit_button("취소", use_container_width=True, key=f"cancel_ec_{c['id']}"):
@@ -1312,8 +1322,18 @@ morning_default = f"""{log['team_name']} 영업일지({today.month:02d}.{today.d
 - 금일 상담건수 : {today_cnt}건(정규{today_reg}건/단과{today_dan}건)
 - 면접예정: {log['interview_count']}건"""
 
+now_hm = now_kst.strftime("%H:%M")
+pending_today = [c for c in today_consults if c["result_status"] not in ("등록", "COD", "미등록")]
+ongoing_today = [c for c in pending_today if c["sched_time"] and c["sched_time"] <= now_hm]
+upcoming_today = sorted((c for c in pending_today if c not in ongoing_today), key=lambda c: c["sched_time"])
+ongoing_revenue = sum(c["expected_revenue"] for c in ongoing_today)
+upcoming_lines = "\n".join(f"{c['sched_time']} {c['visit_type']} {c['expected_revenue'] // 10000}"
+                           for c in upcoming_today)
+
 pm3_default = f"""[{log['team_name']} 15:00 보고]
-{log['done_count']} / {today_cnt}
+{auto_revenue // 10000} / {today_rev // 10000}
+상담중 {ongoing_revenue // 10000}
+{upcoming_lines}
 익일상담 {tmr_cnt} / 익일예정 {tmr_rev // 10000}
 모레상담 {daf_cnt} / 모레예정 {daf_rev // 10000}
 익일면접 {log['interview_count']}건
