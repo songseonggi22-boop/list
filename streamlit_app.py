@@ -399,6 +399,24 @@ def set_state(key, value):
     run("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value))
 
+def get_team_members():
+    try:
+        return json.loads(get_state("team_members", "[]"))
+    except Exception:
+        return []
+
+def add_team_member(name):
+    members = get_team_members()
+    if name and name not in members:
+        members.append(name)
+        set_state("team_members", json.dumps(members, ensure_ascii=False))
+
+def remove_team_member(name):
+    members = get_team_members()
+    if name in members:
+        members.remove(name)
+        set_state("team_members", json.dumps(members, ensure_ascii=False))
+
 def get_tasks():
     rows = q("SELECT id,title,category,task_date,assignee,is_done FROM tasks ORDER BY is_done,created_at DESC")
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
@@ -790,59 +808,70 @@ with right:
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
     st.caption("매일 한국시간 06:00에 완료 체크가 초기화돼요.")
 
+    with st.expander("👥 담당자 관리"):
+        mc1, mc2 = st.columns([3, 1])
+        new_member = mc1.text_input("담당자 이름 추가", key="new_member_name", label_visibility="collapsed",
+                                     placeholder="담당자 이름 입력")
+        if mc2.button("추가", key="add_member_btn", use_container_width=True) and new_member.strip():
+            add_team_member(new_member.strip()); st.rerun()
+        for m in get_team_members():
+            rc1, rc2 = st.columns([3, 1])
+            rc1.caption(m)
+            if rc2.button("삭제", key=f"del_member_{m}"):
+                remove_team_member(m); st.rerun()
+
     CATS = [
         ("우선순위1","우선순위 1","kp1"),
         ("우선순위2","우선순위 2","kp2"),
         ("주중업무", "주중업무",  "kp3"),
     ]
-    assignees = sorted({t["assignee"] for t in tasks if t["assignee"]})
-    groups = assignees + ["미지정"]
+    groups = get_team_members() + ["미지정"]
+    todo_tabs = st.tabs([f"👤 {p}" for p in groups])
 
-    for person in groups:
+    for tab, person in zip(todo_tabs, groups):
+      with tab:
         person_tasks = [t for t in tasks if (t["assignee"] or "미지정") == person]
-        left_n = sum(1 for t in person_tasks if not t["is_done"])
-        with st.expander(f"👤 {person} ({left_n}건 남음)", expanded=True):
-            k1, k2, k3 = st.columns(3, gap="small")
+        k1, k2, k3 = st.columns(3, gap="small")
 
-            for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
-                with col_w:
-                    st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
+        for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
+            with col_w:
+                st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
 
-                    cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
-                    if not cat_tasks:
-                        st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
-                                    unsafe_allow_html=True)
+                cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
+                if not cat_tasks:
+                    st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
+                                unsafe_allow_html=True)
 
-                    for t in cat_tasks:
-                        is_done   = bool(t["is_done"])
-                        d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
-                        tc        = "done" if is_done else ""
+                for t in cat_tasks:
+                    is_done   = bool(t["is_done"])
+                    d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
+                    tc        = "done" if is_done else ""
 
-                        st.markdown(f"""
+                    st.markdown(f"""
 <div class="t-card">
   {'<div class="t-date">'+d_display+'</div>' if d_display else ''}
   <div class="t-title {tc}">{t['title']}</div>
 </div>""", unsafe_allow_html=True)
 
-                        c1, c2 = st.columns([2.5, 0.8])
-                        new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
-                        if new_done != is_done:
-                            toggle_task(t["id"], new_done); st.rerun()
-                        if c2.button("✕", key=f"d{t['id']}"):
-                            del_task(t["id"]); st.rerun()
+                    c1, c2 = st.columns([2.5, 0.8])
+                    new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
+                    if new_done != is_done:
+                        toggle_task(t["id"], new_done); st.rerun()
+                    if c2.button("✕", key=f"d{t['id']}"):
+                        del_task(t["id"]); st.rerun()
 
-                    # 할 일 추가 폼 (이 섹션 담당자로 자동 배정, 필요하면 수정 가능)
-                    with st.form(f"af_{person}_{cat_key}", clear_on_submit=True):
-                        new_title = st.text_input("", placeholder="＋ 새 페이지",
-                                                  label_visibility="collapsed", key=f"ti_{person}_{cat_key}")
-                        r = st.columns(2)
-                        nd_val = r[0].date_input("날짜", value=today,
-                                               label_visibility="collapsed", key=f"nd_{person}_{cat_key}")
-                        new_assignee = r[1].text_input("담당자", value=("" if person == "미지정" else person),
-                                               placeholder="담당자", label_visibility="collapsed",
-                                               key=f"as_{person}_{cat_key}")
-                        if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
-                            add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
+                # 할 일 추가 폼 (이 탭 담당자로 자동 배정, 필요하면 수정 가능)
+                with st.form(f"af_{person}_{cat_key}", clear_on_submit=True):
+                    new_title = st.text_input("", placeholder="＋ 새 페이지",
+                                              label_visibility="collapsed", key=f"ti_{person}_{cat_key}")
+                    r = st.columns(2)
+                    nd_val = r[0].date_input("날짜", value=today,
+                                           label_visibility="collapsed", key=f"nd_{person}_{cat_key}")
+                    new_assignee = r[1].text_input("담당자", value=("" if person == "미지정" else person),
+                                           placeholder="담당자", label_visibility="collapsed",
+                                           key=f"as_{person}_{cat_key}")
+                    if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
+                        add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -934,7 +963,7 @@ def render_target_dashboard(scope_key):
         st.markdown(target_card_html("총목표매출", period_label, total_target_saved, month_actual, highlight=True),
                     unsafe_allow_html=True)
 
-assignee_pool = sorted({c["assignee"] for c in consults if c["assignee"]} | {t["assignee"] for t in tasks if t["assignee"]})
+assignee_pool = get_team_members()
 target_tabs = st.tabs(["전체"] + assignee_pool)
 for tab, scope_key in zip(target_tabs, ["전체"] + assignee_pool):
     with tab:
