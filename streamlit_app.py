@@ -851,25 +851,31 @@ with right:
                     st.rerun()
                 if cc3.button("✕", key=f"dc{c['id']}"):
                     del_consult(c["id"]); st.rerun()
-
-                with st.expander("결과 입력", expanded=False):
-                    STATUS_OPTS = ["미정", "등록", "COD", "미등록"]
-                    cur_status = c["result_status"] if c["result_status"] in STATUS_OPTS else "미정"
-                    sc1, sc2 = st.columns([2, 1])
-                    new_status = sc1.radio("결과", STATUS_OPTS, index=STATUS_OPTS.index(cur_status),
-                                            horizontal=True, key=f"cstat_{c['id']}", label_visibility="collapsed")
-                    if new_status != cur_status:
-                        set_consult_status(c["id"], new_status); st.rerun()
-                    if new_status in ("등록", "COD"):
-                        cur_amt = c["actual_amount"] or c["expected_revenue"]
-                        new_amt = sc2.number_input("실제 매출", min_value=0, step=10000, value=cur_amt,
-                                                    key=f"camt_{c['id']}", label_visibility="collapsed")
-                        if new_amt != cur_amt:
-                            set_consult_amount(c["id"], int(new_amt)); st.rerun()
-                    if new_status != "미정":
-                        if st.button("✅ 완료 (목록·캘린더에서 숨기기)", key=f"fin_{c['id']}", use_container_width=True):
-                            finalize_consult(c["id"]); st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
+
+    with st.expander("📋 상담 결과 입력 (등록/COD/미등록)", expanded=False):
+        if not upcoming:
+            st.caption("예정된 상담 없음")
+        for c in upcoming:
+            st.markdown(f"<div style='font-size:12px;font-weight:600;margin:6px 0 2px'>"
+                        f"{c['sched_date'][5:].replace('-','.')} {c['sched_time']} {c['name']}</div>",
+                        unsafe_allow_html=True)
+            STATUS_OPTS = ["미정", "등록", "COD", "미등록"]
+            cur_status = c["result_status"] if c["result_status"] in STATUS_OPTS else "미정"
+            sc1, sc2 = st.columns([2, 1])
+            new_status = sc1.radio("결과", STATUS_OPTS, index=STATUS_OPTS.index(cur_status),
+                                    horizontal=True, key=f"cstat_{c['id']}", label_visibility="collapsed")
+            if new_status != cur_status:
+                set_consult_status(c["id"], new_status); st.rerun()
+            if new_status in ("등록", "COD"):
+                cur_amt = c["actual_amount"] or c["expected_revenue"]
+                new_amt = sc2.number_input("실제 매출", min_value=0, step=10000, value=cur_amt,
+                                            key=f"camt_{c['id']}", label_visibility="collapsed")
+                if new_amt != cur_amt:
+                    set_consult_amount(c["id"], int(new_amt)); st.rerun()
+            if new_status != "미정":
+                if st.button("✅ 완료 (목록·캘린더에서 숨기기)", key=f"fin_{c['id']}", use_container_width=True):
+                    finalize_consult(c["id"]); st.rerun()
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
     st.caption("매일 한국시간 06:00에 완료 체크가 초기화돼요.")
