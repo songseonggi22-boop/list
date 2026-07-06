@@ -379,6 +379,11 @@ def get_db():
     except sqlite3.OperationalError:
         pass  # 이미 있음
     try:
+        c.execute("ALTER TABLE consultations ADD COLUMN finalized INTEGER DEFAULT 0")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
+    try:
         c.execute("SELECT assignee FROM week_target LIMIT 1")
     except sqlite3.OperationalError:
         # 기존 week_target은 (month,week_no)만 PK라 assignee 컬럼을 못 넣음 → 재생성
@@ -443,9 +448,9 @@ def get_tasks():
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status,visit_type,actual_amount
+    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status,visit_type,actual_amount,finalized
                 FROM consultations ORDER BY sched_date,sched_time""")
-    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status visit_type actual_amount".split(), r))
+    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status visit_type actual_amount finalized".split(), r))
             for r in rows]
 
 def set_consult_status(cid, status):
@@ -453,6 +458,9 @@ def set_consult_status(cid, status):
 
 def set_consult_amount(cid, amount):
     run("UPDATE consultations SET actual_amount=? WHERE id=?", (amount, cid))
+
+def finalize_consult(cid):
+    run("UPDATE consultations SET finalized=1 WHERE id=?", (cid,))
 
 def add_task(title, cat, d, assignee):
     run("INSERT INTO tasks(title,category,task_date,assignee,is_done,created_at) VALUES(?,?,?,?,0,?)",
@@ -618,9 +626,11 @@ tmr_cnt, tmr_rev, _, _ = day_stats(tomorrow_str)
 daf_cnt, daf_rev, _, _ = day_stats(dayafter_str)
 log = get_log(today_str)
 
-# 달력용 이벤트 맵
+# 달력용 이벤트 맵 (완료 처리된 상담은 캘린더에서 제외)
 cmap = {}
 for c in consults:
+    if c["finalized"]:
+        continue
     if c["sched_date"][:7] == f"{yr:04d}-{mo:02d}":
         d = int(c["sched_date"][8:])
         cmap.setdefault(d, []).append(c)
@@ -786,7 +796,7 @@ with left:
 
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
-    upcoming = sorted((c for c in consults if c["sched_date"] >= today_str),
+    upcoming = sorted((c for c in consults if c["sched_date"] >= today_str and not c["finalized"]),
                        key=lambda c: (c["sched_date"], c["sched_time"]))
     by_date = {}
     for c in upcoming:
@@ -842,19 +852,23 @@ with right:
                 if cc3.button("✕", key=f"dc{c['id']}"):
                     del_consult(c["id"]); st.rerun()
 
-                STATUS_OPTS = ["미정", "등록", "COD", "미등록"]
-                cur_status = c["result_status"] if c["result_status"] in STATUS_OPTS else "미정"
-                sc1, sc2 = st.columns([2, 1])
-                new_status = sc1.radio("결과", STATUS_OPTS, index=STATUS_OPTS.index(cur_status),
-                                        horizontal=True, key=f"cstat_{c['id']}", label_visibility="collapsed")
-                if new_status != cur_status:
-                    set_consult_status(c["id"], new_status); st.rerun()
-                if new_status in ("등록", "COD"):
-                    cur_amt = c["actual_amount"] or c["expected_revenue"]
-                    new_amt = sc2.number_input("실제 매출", min_value=0, step=10000, value=cur_amt,
-                                                key=f"camt_{c['id']}", label_visibility="collapsed")
-                    if new_amt != cur_amt:
-                        set_consult_amount(c["id"], int(new_amt)); st.rerun()
+                with st.expander("결과 입력", expanded=False):
+                    STATUS_OPTS = ["미정", "등록", "COD", "미등록"]
+                    cur_status = c["result_status"] if c["result_status"] in STATUS_OPTS else "미정"
+                    sc1, sc2 = st.columns([2, 1])
+                    new_status = sc1.radio("결과", STATUS_OPTS, index=STATUS_OPTS.index(cur_status),
+                                            horizontal=True, key=f"cstat_{c['id']}", label_visibility="collapsed")
+                    if new_status != cur_status:
+                        set_consult_status(c["id"], new_status); st.rerun()
+                    if new_status in ("등록", "COD"):
+                        cur_amt = c["actual_amount"] or c["expected_revenue"]
+                        new_amt = sc2.number_input("실제 매출", min_value=0, step=10000, value=cur_amt,
+                                                    key=f"camt_{c['id']}", label_visibility="collapsed")
+                        if new_amt != cur_amt:
+                            set_consult_amount(c["id"], int(new_amt)); st.rerun()
+                    if new_status != "미정":
+                        if st.button("✅ 완료 (목록·캘린더에서 숨기기)", key=f"fin_{c['id']}", use_container_width=True):
+                            finalize_consult(c["id"]); st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
