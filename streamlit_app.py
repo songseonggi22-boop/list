@@ -462,6 +462,9 @@ def set_consult_amount(cid, amount):
 def finalize_consult(cid):
     run("UPDATE consultations SET finalized=1 WHERE id=?", (cid,))
 
+def unfinalize_consult(cid):
+    run("UPDATE consultations SET finalized=0 WHERE id=?", (cid,))
+
 def add_task(title, cat, d, assignee):
     run("INSERT INTO tasks(title,category,task_date,assignee,is_done,created_at) VALUES(?,?,?,?,0,?)",
         (title, cat, d, assignee, int(time.time()*1000)))
@@ -796,11 +799,16 @@ with left:
 
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
+    show_finalized = st.checkbox("완료 처리된 상담도 보기", key="show_finalized_consults")
+    display_consults = sorted(
+        (c for c in consults if c["sched_date"] >= today_str and (show_finalized or not c["finalized"])),
+        key=lambda c: (c["sched_date"], c["sched_time"]))
+    by_date = {}
+    for c in display_consults:
+        by_date.setdefault(c["sched_date"], []).append(c)
+    # 마감보고 등 다른 곳에서 쓰는 "완료 숨김 반영된" 목록은 별도로 유지
     upcoming = sorted((c for c in consults if c["sched_date"] >= today_str and not c["finalized"]),
                        key=lambda c: (c["sched_date"], c["sched_time"]))
-    by_date = {}
-    for c in upcoming:
-        by_date.setdefault(c["sched_date"], []).append(c)
 
     st.markdown('<div class="db-card" style="margin-bottom:14px"><div class="db-card-title">🔵 상담 일정</div>',
                 unsafe_allow_html=True)
@@ -838,10 +846,11 @@ with right:
                         st.session_state["edit_consult_id"] = None
                         st.rerun()
             else:
-                cc1, cc2, cc3 = st.columns([1, 0.13, 0.13])
+                cc1, cc2, cc3, cc4 = st.columns([1, 0.13, 0.13, 0.13])
+                dim = "opacity:0.5;text-decoration:line-through" if c["finalized"] else ""
                 cc1.markdown(f"""
 <div style='background:#eef2ff;border-left:3px solid #4f46e5;border-radius:6px;
-            padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center'>
+            padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center;{dim}'>
   <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']} <span style='font-weight:500;color:#8b8bd8'>({c['ctype']})</span></span>
   <span style='font-size:11px;color:#6366f1'>{c['sched_time']}</span>
   <span style='font-size:11px;font-weight:700;color:#4f46e5'>{c['expected_revenue']:,}원</span>
@@ -851,6 +860,12 @@ with right:
                     st.rerun()
                 if cc3.button("✕", key=f"dc{c['id']}"):
                     del_consult(c["id"]); st.rerun()
+                if c["finalized"]:
+                    if cc4.button("👁", key=f"unfin_{c['id']}", help="다시 보이게"):
+                        unfinalize_consult(c["id"]); st.rerun()
+                else:
+                    if cc4.button("🙈", key=f"quickfin_{c['id']}", help="완료 처리(숨기기)"):
+                        finalize_consult(c["id"]); st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("📋 상담 결과 입력 (등록/COD/미등록)", expanded=False):
