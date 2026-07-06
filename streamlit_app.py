@@ -250,9 +250,62 @@ def lookup_fee(subject, weekend=False):
         return fees[f"{s}/주말"]
     return None
 
+# ── GitHub 기반 DB 영구 저장 (Streamlit Cloud 로컬 디스크는 슬립/재배포 시 초기화될 수 있음) ──
+GITHUB_DB_PATH = "backup_salesdb.db"  # 로컬 salesdb.db와 별도 경로 (로컬 gitignore와 안 겹치게)
+
+def _github_cfg():
+    if not hasattr(st, "secrets"):
+        return None, None
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    if not token:
+        return None, None
+    return token, st.secrets.get("GITHUB_REPO", "songseonggi22-boop/list")
+
+def restore_db_from_github():
+    token, repo = _github_cfg()
+    if not token or os.path.exists(DB):
+        return
+    import base64, urllib.request, json as _json
+    url = f"https://api.github.com/repos/{repo}/contents/{GITHUB_DB_PATH}"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"token {token}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content = base64.b64decode(_json.load(resp)["content"])
+        with open(DB, "wb") as f:
+            f.write(content)
+    except Exception:
+        pass  # 백업이 아직 없거나 네트워크 문제 → 새 DB로 시작
+
+def backup_db_to_github():
+    token, repo = _github_cfg()
+    if not token:
+        return
+    import base64, urllib.request, json as _json
+    url = f"https://api.github.com/repos/{repo}/contents/{GITHUB_DB_PATH}"
+    headers = {"Authorization": f"token {token}"}
+    sha = None
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            sha = _json.load(resp)["sha"]
+    except Exception:
+        pass
+    try:
+        with open(DB, "rb") as f:
+            content_b64 = base64.b64encode(f.read()).decode()
+        body = {"message": "auto: DB 백업", "content": content_b64}
+        if sha:
+            body["sha"] = sha
+        req = urllib.request.Request(url, data=_json.dumps(body).encode(),
+                                      headers={**headers, "Content-Type": "application/json"}, method="PUT")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass  # ponytail: 네트워크 실패는 조용히 무시, 다음 쓰기 때 다시 시도됨
+
 # ── DB ───────────────────────────────────────────────────────
 @st.cache_resource
 def get_db():
+    restore_db_from_github()
     c = sqlite3.connect(DB, check_same_thread=False)
     c.executescript("""
     CREATE TABLE IF NOT EXISTS tasks(
@@ -336,6 +389,7 @@ def run(sql, a=()):
     with _db_lock:
         get_db().execute(sql, a)
         get_db().commit()
+    backup_db_to_github()  # ponytail: 매 쓰기마다 동기 백업이라 약간 느려질 수 있음, 부담되면 디바운스 추가
 
 def get_state(key, default=None):
     rows = q("SELECT value FROM app_state WHERE key=?", (key,))
