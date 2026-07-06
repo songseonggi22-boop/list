@@ -417,6 +417,12 @@ def remove_team_member(name):
         members.remove(name)
         set_state("team_members", json.dumps(members, ensure_ascii=False))
 
+def get_weekday_pct(person, day):
+    return int(get_state(f"weekday_pct_{person}_{day}", "0") or 0)
+
+def set_weekday_pct(person, day, pct):
+    set_state(f"weekday_pct_{person}_{day}", str(int(pct)))
+
 def get_tasks():
     rows = q("SELECT id,title,category,task_date,assignee,is_done FROM tasks ORDER BY is_done,created_at DESC")
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
@@ -555,6 +561,10 @@ workday = (today - timedelta(days=1)).isoformat() if now_kst.hour < 6 else today
 if get_state("last_task_reset") != workday:
     run("UPDATE tasks SET is_done=0")
     set_state("last_task_reset", workday)
+
+# 업무일 기준 이번 주 월요일 → 주중업무 게이지는 월요일이 되면 새로 시작
+_workday_date = date.fromisoformat(workday)
+week_start = (_workday_date - timedelta(days=_workday_date.weekday())).isoformat()
 
 # 하루 한 번 자동 구글시트 백업 (설정 안 돼있으면 조용히 건너뜀)
 if get_state("last_sheets_backup") != today_str and get_sheets_client():
@@ -836,6 +846,22 @@ with right:
         for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
             with col_w:
                 st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
+
+                if cat_key == "주중업무":
+                    pct = get_weekday_pct(person, week_start)
+                    st.markdown(f"""
+<div style='margin-bottom:8px'>
+  <div style='display:flex;justify-content:space-between;font-size:11px;color:#666'>
+    <span>진행률</span><span><b>{pct}%</b></span>
+  </div>
+  <div style='background:#eee;border-radius:6px;height:8px;overflow:hidden'>
+    <div style='background:#2f80ed;height:100%;width:{pct}%'></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+                    new_pct = st.slider("진행률", 0, 100, pct, step=5,
+                                        key=f"pct_slider_{person}", label_visibility="collapsed")
+                    if new_pct != pct:
+                        set_weekday_pct(person, week_start, new_pct); st.rerun()
 
                 cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
                 if not cat_tasks:
