@@ -384,6 +384,11 @@ def get_db():
     except sqlite3.OperationalError:
         pass  # 이미 있음
     try:
+        c.execute("ALTER TABLE consultations ADD COLUMN deposit_pct INTEGER DEFAULT 70")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음
+    try:
         c.execute("SELECT assignee FROM week_target LIMIT 1")
     except sqlite3.OperationalError:
         # 기존 week_target은 (month,week_no)만 PK라 assignee 컬럼을 못 넣음 → 재생성
@@ -448,9 +453,9 @@ def get_tasks():
     return [dict(zip("id title category task_date assignee is_done".split(), r)) for r in rows]
 
 def get_consults():
-    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status,visit_type,actual_amount,finalized
+    rows = q("""SELECT id,name,sched_date,sched_time,expected_revenue,ctype,assignee,result_status,visit_type,actual_amount,finalized,deposit_pct
                 FROM consultations ORDER BY sched_date,sched_time""")
-    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status visit_type actual_amount finalized".split(), r))
+    return [dict(zip("id name sched_date sched_time expected_revenue ctype assignee result_status visit_type actual_amount finalized deposit_pct".split(), r))
             for r in rows]
 
 def set_consult_status(cid, status):
@@ -458,6 +463,9 @@ def set_consult_status(cid, status):
 
 def set_consult_amount(cid, amount):
     run("UPDATE consultations SET actual_amount=? WHERE id=?", (amount, cid))
+
+def set_consult_pct(cid, pct):
+    run("UPDATE consultations SET deposit_pct=? WHERE id=?", (pct, cid))
 
 def finalize_consult(cid):
     run("UPDATE consultations SET finalized=1 WHERE id=?", (cid,))
@@ -891,6 +899,11 @@ with right:
             if new_status != "미정":
                 if st.button("✅ 완료 (목록·캘린더에서 숨기기)", key=f"fin_{c['id']}", use_container_width=True):
                     finalize_consult(c["id"]); st.rerun()
+
+            new_pct = st.slider("입금(등록) 예상 확률", 0, 100, c["deposit_pct"], step=5,
+                                 key=f"cpct_{c['id']}")
+            if new_pct != c["deposit_pct"]:
+                set_consult_pct(c["id"], new_pct); st.rerun()
 
     st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
     st.caption("매일 한국시간 06:00에 완료 체크가 초기화돼요.")
@@ -1357,11 +1370,15 @@ month_target_live = int(get_state(f"month_total_target_{this_month}_전체", "0"
 month_achieved_live = sum(c["expected_revenue"] for c in consults if c["sched_date"][:7] == this_month)
 pct = round(month_achieved_live / month_target_live * 100) if month_target_live else 0
 
+today_pct_lines = "\n".join(
+    f"{c['expected_revenue'] // 10000}만원/{c['assignee'] or '미지정'}/{c['deposit_pct']}%"
+    for c in sorted(today_consults, key=lambda c: c["sched_time"]))
+
 morning_default = f"""{log['team_name']} 영업일지({today.month:02d}.{today.day:02d})
 
 - 금일 입금예정: {today_rev // 10000}만원
 
-{today_rev // 10000}만원 / {log['rep1_name']} {log['rep1_pct']}%
+{today_pct_lines}
 
 - 금일 상담건수 : {today_cnt}건(정규{today_reg}건/단과{today_dan}건)
 - 면접예정: {log['interview_count']}건"""
