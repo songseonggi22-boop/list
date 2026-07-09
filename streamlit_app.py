@@ -564,6 +564,13 @@ def backup_to_sheets():
     logs_ = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log ORDER BY log_date")
     write_sheet("daily_log", LOG_COLS, [list(r) for r in logs_])
 
+# ── 금액 입력 (콤마 표시, number_input의 스크롤휠 오작동 방지용 텍스트 입력) ──
+def money_input(label, value, key, container=None, **kw):
+    box = container if container is not None else st
+    raw = box.text_input(label, value=f"{int(value):,}", key=key, **kw)
+    digits = re.sub(r"[^\d]", "", raw)
+    return int(digits) if digits else 0
+
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
     if not iso: return ""
@@ -798,7 +805,7 @@ with left:
             cdate = r1[1].date_input("날짜", value=today)
             r2 = st.columns([1, 1, 1])
             ctime  = r2[0].text_input("시간", placeholder="14:00")
-            crev   = r2[1].number_input("예정매출(원)", min_value=0, step=10000)
+            crev   = money_input("예정매출(원)", 0, "cf_crev", r2[1])
             ctype  = r2[2].selectbox("구분", ["단과", "정규"])
             cvisit = st.radio("방문 유형", ["신규방문", "재방문", "온라인"], horizontal=True)
             cassignee = st.text_input("담당자", placeholder="담당자")
@@ -838,7 +845,7 @@ with right:
                     edate = e2.date_input("날짜", value=datetime.strptime(c["sched_date"], "%Y-%m-%d").date())
                     e3, e4, e5 = st.columns(3)
                     etime = e3.text_input("시간", value=c["sched_time"])
-                    erev  = e4.number_input("예정매출(원)", min_value=0, step=10000, value=c["expected_revenue"])
+                    erev  = money_input("예정매출(원)", c["expected_revenue"], f"erev_{c['id']}", e4)
                     ectype = e5.selectbox("구분", ["단과", "정규"], index=0 if c["ctype"] == "단과" else 1)
                     visit_opts = ["신규방문", "재방문", "온라인"]
                     evisit = st.radio("방문 유형", visit_opts, horizontal=True,
@@ -892,8 +899,7 @@ with right:
                 set_consult_status(c["id"], new_status); st.rerun()
             if new_status in ("등록", "COD"):
                 cur_amt = c["actual_amount"] or c["expected_revenue"]
-                new_amt = sc2.number_input("실제 매출", min_value=0, step=10000, value=cur_amt,
-                                            key=f"camt_{c['id']}", label_visibility="collapsed")
+                new_amt = money_input("실제 매출", cur_amt, f"camt_{c['id']}", sc2, label_visibility="collapsed")
                 if new_amt != cur_amt:
                     set_consult_amount(c["id"], int(new_amt)); st.rerun()
             if new_status != "미정":
@@ -1036,8 +1042,7 @@ def render_target_dashboard(scope_key):
 
     with st.expander("✏️ 목표 설정/수정", expanded=not wt_saved):
         with st.form(f"wtf_{scope_key}_{target_month}"):
-            total_target = st.number_input(f"{target_month} 총 목표매출(원)", min_value=0, step=100000,
-                                            value=total_target_saved, key=f"tt_{scope_key}")
+            total_target = money_input(f"{target_month} 총 목표매출(원)", total_target_saved, f"tt_{scope_key}")
             week_inputs = []
             for wn in range(1, 5):
                 default = wt_saved.get(wn)
@@ -1051,8 +1056,7 @@ def render_target_dashboard(scope_key):
                 c1, c2, c3 = st.columns(3)
                 sd = c1.date_input(f"{wn}주차 시작", value=sd_default, key=f"wt_sd_{scope_key}_{wn}")
                 ed = c2.date_input(f"{wn}주차 종료", value=ed_default, key=f"wt_ed_{scope_key}_{wn}")
-                tg = c3.number_input(f"{wn}주차 목표(원)", min_value=0, step=100000,
-                                      value=tg_default, key=f"wt_tg_{scope_key}_{wn}")
+                tg = money_input(f"{wn}주차 목표(원)", tg_default, f"wt_tg_{scope_key}_{wn}", c3)
                 week_inputs.append((wn, sd, ed, tg))
             if st.form_submit_button("저장", use_container_width=True):
                 set_state(f"month_total_target_{target_month}_{scope_key}", str(int(total_target)))
@@ -1299,10 +1303,8 @@ elif gtype == "과목변경 배정":
         auto_ofee = lookup_fee(old_s["subject"], _is_weekend_days(old_s["days"])) or 0
         auto_nfee = lookup_fee(new_s["subject"], _is_weekend_days(new_s["days"])) or 0
         c1, c2 = st.columns(2)
-        ofee = c1.number_input(f"이전 수강료 (자동조회: {auto_ofee:,}원)", min_value=0, step=10000,
-                                value=auto_ofee, key="cg_ofee")
-        nfee = c2.number_input(f"변경 후 수강료 (자동조회: {auto_nfee:,}원)", min_value=0, step=10000,
-                                value=auto_nfee, key="cg_nfee")
+        ofee = money_input(f"이전 수강료 (자동조회: {auto_ofee:,}원)", auto_ofee, "cg_ofee", c1)
+        nfee = money_input(f"변경 후 수강료 (자동조회: {auto_nfee:,}원)", auto_nfee, "cg_nfee", c2)
         if st.button("✨ 문구 생성", use_container_width=True, key="cg_gen"):
             result = gen_text("과목변경", os_=old_s["subject"], ofee=int(ofee),
                               nd=new_s["start_date"], nt=new_s["start_time"], ns=new_s["subject"],
@@ -1357,9 +1359,9 @@ auto_revenue = sum(c["actual_amount"] or c["expected_revenue"]
                     for c in today_consults if c["result_status"] in ("등록", "COD"))
 
 rev_c1, rev_c2 = st.columns(2)
-in_revenue = rev_c1.number_input(f"금일매출결과 (자동조회: {auto_revenue:,}원)", min_value=0, step=10000,
-                                  value=log["actual_revenue"] or auto_revenue, key="in_actual_revenue")
-in_refund = rev_c2.number_input("환불", min_value=0, step=10000, value=log["refund"], key="in_refund")
+in_revenue = money_input(f"금일매출결과 (자동조회: {auto_revenue:,}원)",
+                          log["actual_revenue"] or auto_revenue, "in_actual_revenue", rev_c1)
+in_refund = money_input("환불", log["refund"], "in_refund", rev_c2)
 if st.button("💾 금일매출결과·환불 저장"):
     run("UPDATE daily_log SET actual_revenue=?, refund=? WHERE log_date=?",
         (int(in_revenue), int(in_refund), today_str))
@@ -1379,9 +1381,8 @@ with st.expander("👤 담당자·통화시간 설정 (담당자는 고정, 통�
 
 this_month = today.strftime("%Y-%m")
 month_target_key = f"month_total_target_{this_month}_전체"
-in_month_target = st.number_input(f"{today.month}월 팀목표매출 (다음 달이 되면 자동으로 0부터 다시 설정)",
-                                   min_value=0, step=1000000,
-                                   value=int(get_state(month_target_key, "0") or 0), key="in_month_target")
+in_month_target = money_input(f"{today.month}월 팀목표매출 (다음 달이 되면 자동으로 0부터 다시 설정)",
+                               int(get_state(month_target_key, "0") or 0), "in_month_target")
 if st.button("💾 팀목표매출 저장"):
     set_state(month_target_key, str(int(in_month_target)))
     st.rerun()
