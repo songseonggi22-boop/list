@@ -600,6 +600,7 @@ st.set_page_config(page_title="업무 대시보드", page_icon="📊",
 
 ss = st.session_state
 if "assign_out" not in ss: ss.assign_out = ""
+if "notice_out" not in ss: ss.notice_out = ""
 
 now_kst   = datetime.now(KST)
 today     = now_kst.date()
@@ -1330,6 +1331,83 @@ if ss.assign_out:
     st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=max(80, min(400, 30 * lines_n)))
     if st.button("🗑 초기화"):
         ss.assign_out = ""; st.rerun()
+
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+# ── 개강 안내 문자 생성 ────────────────────────────────────────
+st.markdown("""
+<div class="db-card">
+  <div class="db-card-title">📨 개강 안내 문자 생성</div>
+  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+    강좌를 고르면 학생에게 보낼 개강 안내 문구가 자동으로 채워집니다.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+WEEKDAY_KO = "월화수목금토일"
+
+def _hours_between(start, end):
+    sh, sm = map(int, start.split(":"))
+    eh, em = map(int, end.split(":"))
+    diff = (eh * 60 + em) - (sh * 60 + sm)
+    hours = diff / 60
+    return int(hours) if hours == int(hours) else round(hours, 1)
+
+notice_s = _course_picker("개강 안내할", "notice_pick")
+
+if notice_s:
+    room_floors = json.loads(get_state("room_floors", "{}"))
+    floor_default = room_floors.get(notice_s["room"], "")
+    nc1, nc2, nc3 = st.columns(3)
+    sender_name = nc1.text_input("발신자(팀장) 이름", value=get_state("notice_sender_name", "송성기"), key="notice_sender_name_in")
+    sender_phone = nc2.text_input("연락처", value=get_state("notice_sender_phone", "042-331-7511"), key="notice_sender_phone_in")
+    branch_name = nc3.text_input("지점명", value=get_state("notice_branch_name", "SBS아카데미대전지점"), key="notice_branch_name_in")
+    floor = st.text_input(f"'{notice_s['room']}' 강의장 층수", value=floor_default, placeholder="9층", key="notice_floor_in")
+
+    if st.button("✨ 개강 안내 문구 생성", use_container_width=True, key="notice_gen"):
+        set_state("notice_sender_name", sender_name.strip())
+        set_state("notice_sender_phone", sender_phone.strip())
+        set_state("notice_branch_name", branch_name.strip())
+        if floor.strip():
+            room_floors[notice_s["room"]] = floor.strip()
+            set_state("room_floors", json.dumps(room_floors, ensure_ascii=False))
+
+        sd = datetime.strptime(notice_s["start_date"], "%Y-%m-%d").date()
+        ed = datetime.strptime(notice_s["end_date"], "%Y-%m-%d").date()
+        hours = _hours_between(notice_s["start_time"], notice_s["end_time"])
+        room_label = f"{notice_s['room']} 강의장" + (f" ({floor.strip()})" if floor.strip() else "")
+
+        ss.notice_out = f"""안녕하세요, {branch_name} {sender_name} 팀장입니다.
+
+아래 배정된 교육 과정 개강 일정이오니
+스케줄 확인 해주시고, 확인 후 답변 부탁드립니다:)
+
+■ 개강 일정
+
+· 수강과목 : {notice_s['subject']}
+· 개강일 : {sd.isoformat()} ({WEEKDAY_KO[sd.weekday()]})
+· 종강일 : {ed.isoformat()} ({WEEKDAY_KO[ed.weekday()]})
+· 요일 : {notice_s['day_label']} (주 {len(notice_s['days'])}일)
+· 시간 : {notice_s['start_time']}~{notice_s['end_time']} ({hours}H)
+· 강의장 : {room_label}
+
+
+* 강의장은 개강 전날까지 변경될 수 있습니다.
+* 코리아교육그룹-스마트러닝(앱/어플)에서 일정 및 강의장 확인이 가능합니다.
+* 일정 변경 및 취소는 개강 3일 전까지만 가능하며, 수업 자리는 지정석이 아닙니다.
+* 비대면 수업 링크는 문자 발송됩니다.
+
+* 본 건물 지하주차장은 시간대에 따라 진출입 지연이 발생할 수 있으므로 가급적 대중교통 이용을 권장드립니다.
+* 주차는 수업 시간만큼만 무료 지원되며, 초과 시 30분당 1,200원의 추가요금이 발생합니다. (추가요금은 실물카드 결제만 가능 / 삼성페이 불가)
+
+☎{sender_phone}
+{branch_name} {sender_name} 팀장"""
+        st.rerun()
+
+if ss.notice_out:
+    lines_n = ss.notice_out.count("\n") + 1
+    st.text_area("📋 생성된 개강 안내 문구 (복사하세요)", value=ss.notice_out, height=max(200, min(500, 22 * lines_n)))
+    if st.button("🗑 초기화", key="notice_clear"):
+        ss.notice_out = ""; st.rerun()
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
