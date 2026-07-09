@@ -1365,8 +1365,28 @@ if st.button("💾 금일매출결과·환불 저장"):
         (int(in_revenue), int(in_refund), today_str))
     st.rerun()
 
+with st.expander("👤 담당자·통화시간 설정 (담당자는 고정, 통화시간은 매일 수정)"):
+    n1, n2 = st.columns(2)
+    in_rep1_name = n1.text_input("담당자1 이름", value=log["rep1_name"], key="in_rep1_name")
+    in_rep2_name = n2.text_input("담당자2 이름", value=log["rep2_name"], key="in_rep2_name")
+    t1c, t2c = st.columns(2)
+    in_rep1_call = t1c.text_input("담당자1 통화시간", value=log["rep1_call"], placeholder="00:00:00", key="in_rep1_call")
+    in_rep2_call = t2c.text_input("담당자2 통화시간", value=log["rep2_call"], placeholder="00:00:00", key="in_rep2_call")
+    if st.button("💾 담당자·통화시간 저장"):
+        run("""UPDATE daily_log SET rep1_name=?, rep2_name=?, rep1_call=?, rep2_call=? WHERE log_date=?""",
+            (in_rep1_name.strip(), in_rep2_name.strip(), in_rep1_call.strip(), in_rep2_call.strip(), today_str))
+        st.rerun()
+
 this_month = today.strftime("%Y-%m")
-month_target_live = int(get_state(f"month_total_target_{this_month}_전체", "0") or 0)
+month_target_key = f"month_total_target_{this_month}_전체"
+in_month_target = st.number_input(f"{today.month}월 팀목표매출 (다음 달이 되면 자동으로 0부터 다시 설정)",
+                                   min_value=0, step=1000000,
+                                   value=int(get_state(month_target_key, "0") or 0), key="in_month_target")
+if st.button("💾 팀목표매출 저장"):
+    set_state(month_target_key, str(int(in_month_target)))
+    st.rerun()
+
+month_target_live = int(get_state(month_target_key, "0") or 0)
 month_achieved_live = sum(c["expected_revenue"] for c in consults if c["sched_date"][:7] == this_month)
 pct = round(month_achieved_live / month_target_live * 100) if month_target_live else 0
 
