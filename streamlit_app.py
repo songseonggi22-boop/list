@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io
+import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io, hashlib
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -1529,16 +1529,26 @@ close_default = f"""컴퓨터 {log['team_name']} 영업마감보고
 현재달성매출 : {month_achieved_live:,}
 현재달성율 : {pct}%"""
 
+# 보고서에 쓰인 원본 값이 바뀌면 아래 text_area가 자동으로 새로고침되도록,
+# 위젯 key에 데이터 지문(fingerprint)을 포함시킴. (안 그러면 Streamlit이
+# 이전에 렌더링된 위젯 값을 그대로 들고 있어서 값을 바꿔 저장해도
+# 미리보기 텍스트가 안 바뀌는 문제가 있었음)
+_fingerprint_src = "|".join(str(log.get(k, "")) for k in LOG_COLS)
+_fingerprint_src += f"|{cycle_start}|{cycle_target_saved}|{cycle_base_saved}"
+_fingerprint_src += "|" + "|".join(f"{c['id']}:{c['result_status']}:{c['actual_amount']}:{c['finalized']}"
+                                    for c in consults)
+rt_key = hashlib.md5(_fingerprint_src.encode()).hexdigest()[:10]
+
 t1, t2, t3 = st.tabs(["출근보고", "15시보고", "마감보고"])
 with t1:
     st.text_area("출근보고 (직접 수정 가능)", value=morning_default, height=180,
-                 key=f"rt_morning_{rt_seq}", label_visibility="collapsed")
+                 key=f"rt_morning_{rt_key}_{rt_seq}", label_visibility="collapsed")
 with t2:
     st.text_area("15시보고 (직접 수정 가능)", value=pm3_default, height=140,
-                 key=f"rt_pm3_{rt_seq}", label_visibility="collapsed")
+                 key=f"rt_pm3_{rt_key}_{rt_seq}", label_visibility="collapsed")
 with t3:
     st.text_area("마감보고 (직접 수정 가능)", value=close_default, height=320,
-                 key=f"rt_close_{rt_seq}", label_visibility="collapsed")
+                 key=f"rt_close_{rt_key}_{rt_seq}", label_visibility="collapsed")
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
