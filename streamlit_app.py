@@ -211,6 +211,21 @@ def sessions_active_on(d):
     out = [s for s in get_timetable() if s["start_date"] <= ds <= s["end_date"]]
     return sorted(out, key=lambda s: (s["start_time"], s["subject"]))
 
+def match_real_session(subject, start_date):
+    # 개인 시간표(xlsx/이미지)에서 뽑아낸 값은 사람이 손으로 짠 계획이라 실제
+    # 인트라넷 시간표와 요일·시간 표기가 다를 수 있어서, 과목명+개강일로
+    # 실제 강좌를 찾아 그 강좌의 정확한 정보(요일/시간/강의장/강사)를 대신 씀
+    subject = (subject or "").strip()
+    start_date = (start_date or "").strip()
+    if not subject or not start_date:
+        return None
+    same_date = [s for s in get_timetable() if s["start_date"] == start_date]
+    exact = [s for s in same_date if s["subject"] == subject]
+    if exact:
+        return exact[0]
+    partial = [s for s in same_date if subject in s["subject"] or s["subject"] in subject]
+    return partial[0] if partial else None
+
 # ── 수강료표 파싱 ────────────────────────────────────────────
 def _expand_fee_name(name):
     suffix = ""
@@ -1122,12 +1137,20 @@ with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 �
             st.caption(f"{student}님의 시간표에서 {len(courses)}개 강좌를 찾았어요.")
         if courses:
             for i, c in enumerate(courses):
-                weekend = _is_weekend_days(c["days"])
-                label = f"{c['subject']} — {c['start_time']} 개강 {c['start_date']}" + ("  [주말]" if weekend else "")
+                matched = match_real_session(c["subject"], c["start_date"])
+                if matched:
+                    weekend = _is_weekend_days(matched["days"])
+                    label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
+                             f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
+                    nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
+                else:
+                    weekend = _is_weekend_days(c["days"])
+                    label = (f"{c['subject']} — {c['start_time']} 개강 {c['start_date']}"
+                             + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(입력값 그대로 사용)")
+                    nd, nt, ns = c["start_date"], c["start_time"], c["subject"]
                 key = f"pt_pick_{i}_{cb_seq}"
                 st.checkbox(label, key=key)
-                candidates.append(dict(key=key, nd=c["start_date"], nt=c["start_time"],
-                                        ns=c["subject"], nts="주말" if weekend else ""))
+                candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
         elif upl and not student:
             st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
 
@@ -1168,12 +1191,20 @@ with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)")
     img_results = st.session_state.get("tt_img_results")
     if img_results:
         for i, c in enumerate(img_results):
-            weekend = _is_weekend_days(_expand_days(c.get("day_label", "")))
-            label = f"{c.get('subject','')} — {c.get('start_time','')} 개강 {c.get('start_date','')}" + ("  [주말]" if weekend else "")
+            matched = match_real_session(c.get("subject", ""), c.get("start_date", ""))
+            if matched:
+                weekend = _is_weekend_days(matched["days"])
+                label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
+                         f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
+                nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
+            else:
+                weekend = _is_weekend_days(_expand_days(c.get("day_label", "")))
+                label = (f"{c.get('subject','')} — {c.get('start_time','')} 개강 {c.get('start_date','')}"
+                         + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(인식값 그대로 사용)")
+                nd, nt, ns = c.get("start_date", ""), c.get("start_time", ""), c.get("subject", "")
             key = f"img_pick_{i}_{cb_seq}"
             st.checkbox(label, key=key)
-            candidates.append(dict(key=key, nd=c.get("start_date", ""), nt=c.get("start_time", ""),
-                                    ns=c.get("subject", ""), nts="주말" if weekend else ""))
+            candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
     elif img_results is not None:
         st.caption("인식된 강좌가 없어요.")
 
