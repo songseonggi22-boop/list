@@ -1,0 +1,36 @@
+
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
+<style>
+table, img, fieldset{border:0}
+table{border-collapse: collapse;}
+menu,ul,ol,li{list-style: none outside none}
+
+table{color:#454545;font-family:"돋움",Dotum,"굴림",Gulim,Helvetica,Sans-serif !important;font-size:12px}
+table{border-collapse: collapse;}
+
+th, td
+{
+	mso-style-parent:style0;
+	font-size:9.0pt;
+	text-align:center;
+	border-top:none;
+	border-right:.5pt solid black;
+	border-bottom:.5pt solid black;
+	border-left:none;
+	mso-pattern:auto none;
+	white-space:normal;
+}
+
+</style>
+<body>
+  
+		<div id="timeTable" style="top: 250px; overflow: auto;">
+			
+		<table id="time_table" class="timeTableArea" summary="강의시간표">
+				<colgroup id="colgroup"><col width="100"><col width="140"><col width="140"></colgroup>
+				<thead id="tHeadArea"><tr><th style="top: 0px; left: 0px;">강의실</th><th colspan="1" style="top: 0px;">B</th><th colspan="1" style="top: 0px;">E</th></tr><tr><th style="top: 0px; left: 0px;"></th><th style="top: 0px;">B-1</th><th style="top: 0px;">E-1</th></tr><tr><th style="top: 0px; left: 0px;">정원</th><th style="top: 0px;">20&nbsp;&nbsp;&nbsp;[ 재: 0]</th><th style="top: 0px;">20&nbsp;&nbsp;&nbsp;[ 재: 0]</th></tr></thead>
+				<tbody id="tBodyArea"><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">12:00</th><td id="1_1"></td><td id="1_2" rowspan="6" style="cursor:pointer;border-bottom: solid 1px #333; background-color:#F0F0F0" title="" onclick="sv_time_list.Fn_sv_viewStudentList(1);"><ul class="td_box"><li class="subjectName"><font color="#000000"><b>일러스트/주말</b></font></li><li> 전체출석율 : 0%</li><li>수업없음</li><li title="">정원 : 20(0)<br></li><li style="font-weight: bold;" class=" skin0_Font">배정:0<span class=" " style="margin-bottom: 2px;margin-left: 3px;"></span></li><li></li><li>토/일</li><li>개:2026-11-21</li><li class="li_last">종:2026-12-13</li></ul></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">12:30</th><td id="2_1"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">13:00</th><td id="3_1"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">13:30</th><td id="4_1"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">14:00</th><td id="5_1"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">14:30</th><td id="6_1"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">15:00</th><td id="7_1" rowspan="6" style="cursor:pointer;border-bottom: solid 1px #333; background-color:#F0F0F0" title="" onclick="sv_time_list.Fn_sv_viewStudentList(0);"><ul class="td_box"><li class="subjectName"><font color="#000000"><b>포토웍스/주말</b></font></li><li> 전체출석율 : 0%</li><li>수업없음</li><li title="">정원 : 20(0)<br></li><li style="font-weight: bold;" class=" skin0_Font">배정:0<span class=" " style="margin-bottom: 2px;margin-left: 3px;"></span></li><li></li><li>토/일</li><li>개:2026-11-21</li><li class="li_last">종:2026-12-13</li></ul></td><td id="7_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">15:30</th><td id="8_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">16:00</th><td id="9_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">16:30</th><td id="10_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">17:00</th><td id="11_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">17:30</th><td id="12_2"></td></tr><tr><th style="vertical-align: top; margin-top: 0px; padding-top: 0px; left: 0px;">18:00</th><td id="13_1"></td><td id="13_2"></td></tr></tbody>
+			</table></div>
+	
+</body>

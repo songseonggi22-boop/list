@@ -490,18 +490,6 @@ def update_consult(cid, name, d, t, rev, ctype, assignee, visit_type="신규방�
     run("""UPDATE consultations SET name=?, sched_date=?, sched_time=?, expected_revenue=?, ctype=?, assignee=?, visit_type=?
            WHERE id=?""", (name, d, t, rev, ctype, assignee, visit_type, cid))
 
-# ── 주차별 목표매출 (담당자별) ─────────────────────────────────
-def get_week_targets(month, assignee):
-    rows = q("SELECT week_no,start_date,end_date,target FROM week_target WHERE month=? AND assignee=? ORDER BY week_no",
-             (month, assignee))
-    return {r[0]: dict(start_date=r[1], end_date=r[2], target=r[3]) for r in rows}
-
-def save_week_target(month, week_no, assignee, start_date, end_date, target):
-    run("""INSERT INTO week_target(month,week_no,assignee,start_date,end_date,target) VALUES(?,?,?,?,?,?)
-           ON CONFLICT(month,week_no,assignee) DO UPDATE SET
-           start_date=excluded.start_date, end_date=excluded.end_date, target=excluded.target""",
-        (month, week_no, assignee, start_date, end_date, target))
-
 # ── 일지(daily_log): 자동계산 외 수동 항목 저장 ────────────────────
 LOG_COLS = ("log_date team_name rep1_name rep1_pct rep2_name rep1_call rep2_call "
             "done_count registered cod unregistered actual_revenue refund "
@@ -570,6 +558,58 @@ def money_input(label, value, key, container=None, **kw):
     raw = box.text_input(label, value=f"{int(value):,}", key=key, **kw)
     digits = re.sub(r"[^\d]", "", raw)
     return int(digits) if digits else 0
+
+# ── 15시보고/마감보고 편집 가능한 양식 ({토큰} 치환) ────────────────
+PM3_TEMPLATE_DEFAULT = """[{팀명} 15:00 보고]
+{입금완료} / {입금예정}
+상담중 {상담중}
+{상담목록}
+익일상담 {익일상담} / 익일예정 {익일예정}
+모레상담 {모레상담} / 모레예정 {모레예정}
+익일면접 {익일면접}건
+따즈아 {따즈아분자} / {따즈아분모}"""
+
+CLOSE_TEMPLATE_DEFAULT = """컴퓨터 {팀명} 영업마감보고
+
+ 상담 : {상담건수}
+ 등록 : {등록}
+ COD : {COD}
+ 미등록 : {미등록}
+
+금일매출결과 :{금일매출}원
+환불 :{환불}원
+
+통화시간
+{담당자1} {통화1} (상담 {상담건수}건)
+{담당자2} {통화2}
+
+익일예정상담 : {익일상담}건
+익일예정매출 : {익일매출}원
+익일목표매출 : {익일목표매출}원
+
+{월}월 팀목표매출 : {팀목표매출}
+현재달성매출 : {현재달성매출}
+현재달성율 : {달성율}%"""
+
+def render_report_template(template, values):
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError) as e:
+        return f"[양식 오류: {e} 토큰을 찾을 수 없어요. 아래 사용 가능한 토큰 목록을 확인해주세요]\n\n" + template
+
+def report_template_editor(label, key, default_tmpl, tokens):
+    with st.expander(f"✏️ {label} 양식 편집"):
+        st.caption("사용 가능한 토큰: " + " ".join(f"{{{t}}}" for t in tokens))
+        cur = get_state(key, default_tmpl)
+        edited = st.text_area(f"{label} 양식", value=cur, height=200, key=f"{key}_edit", label_visibility="collapsed")
+        c1, c2 = st.columns(2)
+        if c1.button("💾 저장", key=f"{key}_save", use_container_width=True):
+            set_state(key, edited)
+            st.rerun()
+        if c2.button("↩️ 기본값으로 되돌리기", key=f"{key}_reset", use_container_width=True):
+            set_state(key, default_tmpl)
+            st.rerun()
+    return get_state(key, default_tmpl)
 
 # ── 배정 문구 생성기 ──────────────────────────────────────────
 def fdate(iso):
@@ -816,14 +856,16 @@ with left:
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
     show_finalized = st.checkbox("완료 처리된 상담도 보기", key="show_finalized_consults")
+    # 날짜 제한 없이(지난 상담 포함) 표시 — 지난 상담이 결과 체크 없이 넘어가면
+    # 완료 처리를 못 해서 캘린더에 계속 남는 문제가 있었음
     display_consults = sorted(
-        (c for c in consults if c["sched_date"] >= today_str and (show_finalized or not c["finalized"])),
+        (c for c in consults if show_finalized or not c["finalized"]),
         key=lambda c: (c["sched_date"], c["sched_time"]))
     by_date = {}
     for c in display_consults:
         by_date.setdefault(c["sched_date"], []).append(c)
     # 마감보고 등 다른 곳에서 쓰는 "완료 숨김 반영된" 목록은 별도로 유지
-    upcoming = sorted((c for c in consults if c["sched_date"] >= today_str and not c["finalized"]),
+    upcoming = sorted((c for c in consults if not c["finalized"]),
                        key=lambda c: (c["sched_date"], c["sched_time"]))
 
     st.markdown('<div class="db-card" style="margin-bottom:14px"><div class="db-card-title">🔵 상담 일정</div>',
@@ -1000,134 +1042,6 @@ with right:
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
-# ── 주차별 목표매출 (담당자별 탭) ──────────────────────────────
-st.markdown("""
-<div class="db-card">
-  <div class="db-card-title">🎯 목표매출 설정</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
-    월 전체 목표와 1~4주차 목표를 담당자별로 따로 설정하고 진행률을 확인합니다.
-  </div>
-</div>""", unsafe_allow_html=True)
-
-target_month_pick = st.date_input("기준 월", value=today, key="target_month_pick")
-target_month = target_month_pick.strftime("%Y-%m")
-_, days_in_month = cal_lib.monthrange(target_month_pick.year, target_month_pick.month)
-DEFAULT_WEEK_RANGES = [(1, 7), (8, 14), (15, 21), (22, days_in_month)]
-
-def target_card_html(title, period_label, target, actual, highlight=False):
-    pct = round(actual / target * 100, 1) if target else 0.0
-    bar_pct = min(pct, 100)
-    if highlight:
-        bg, tx, sub, line, track = "#1e3a5f", "#fff", "#9db4cf", "rgba(255,255,255,0.25)", "rgba(255,255,255,0.15)"
-    else:
-        bg, tx, sub, line, track = "#fff", "#333", "#999", "#eee", "#eee"
-    return f"""
-<div style="background:{bg};border-radius:14px;padding:18px 12px;text-align:center;
-            box-shadow:0 2px 8px rgba(0,0,0,0.05);height:100%">
-  <div style="font-size:10px;color:{sub}">기간: ({period_label})</div>
-  <div style="font-size:14px;font-weight:700;margin:6px 0;color:{tx}">{title}</div>
-  <div style="font-size:20px;font-weight:800;color:{tx}">{target:,}</div>
-  <hr style="margin:10px 0;border-color:{line}">
-  <div style="font-size:11px;color:{sub}">매출현황</div>
-  <div style="font-size:17px;font-weight:700;color:{tx};margin:4px 0">{actual:,}</div>
-  <div style="font-size:12px;color:{sub}">달성율 <b style="color:#2f80ed">{pct}%</b></div>
-  <div style="background:{track};border-radius:6px;height:6px;margin-top:8px;overflow:hidden">
-    <div style="background:#2f80ed;height:100%;width:{bar_pct}%"></div>
-  </div>
-</div>"""
-
-def render_target_dashboard(scope_key):
-    scope_consults = consults if scope_key == "전체" else [c for c in consults if c["assignee"] == scope_key]
-    wt_saved = get_week_targets(target_month, scope_key)
-    total_target_saved = int(get_state(f"month_total_target_{target_month}_{scope_key}", "0") or 0)
-
-    with st.expander("✏️ 목표 설정/수정", expanded=not wt_saved):
-        with st.form(f"wtf_{scope_key}_{target_month}"):
-            total_target = money_input(f"{target_month} 총 목표매출(원)", total_target_saved, f"tt_{scope_key}")
-            week_inputs = []
-            for wn in range(1, 5):
-                default = wt_saved.get(wn)
-                d_start, d_end = DEFAULT_WEEK_RANGES[wn - 1]
-                d_end = min(d_end, days_in_month)
-                sd_default = (datetime.strptime(default["start_date"], "%Y-%m-%d").date()
-                              if default else target_month_pick.replace(day=d_start))
-                ed_default = (datetime.strptime(default["end_date"], "%Y-%m-%d").date()
-                              if default else target_month_pick.replace(day=d_end))
-                tg_default = default["target"] if default else 0
-                c1, c2, c3 = st.columns(3)
-                sd = c1.date_input(f"{wn}주차 시작", value=sd_default, key=f"wt_sd_{scope_key}_{wn}")
-                ed = c2.date_input(f"{wn}주차 종료", value=ed_default, key=f"wt_ed_{scope_key}_{wn}")
-                tg = money_input(f"{wn}주차 목표(원)", tg_default, f"wt_tg_{scope_key}_{wn}", c3)
-                week_inputs.append((wn, sd, ed, tg))
-            if st.form_submit_button("저장", use_container_width=True):
-                set_state(f"month_total_target_{target_month}_{scope_key}", str(int(total_target)))
-                for wn, sd, ed, tg in week_inputs:
-                    save_week_target(target_month, wn, scope_key, sd.isoformat(), ed.isoformat(), int(tg))
-                st.rerun()
-
-    cols = st.columns(5)
-    for wn in range(1, 5):
-        info = wt_saved.get(wn)
-        with cols[wn - 1]:
-            if info:
-                wk_actual = sum(c["expected_revenue"] for c in scope_consults
-                                 if info["start_date"] <= c["sched_date"] <= info["end_date"])
-                st.markdown(target_card_html(f"{wn}주차 목표", f"{info['start_date']}~{info['end_date']}",
-                                              info["target"], wk_actual), unsafe_allow_html=True)
-            else:
-                st.markdown(target_card_html(f"{wn}주차 목표", "미설정", 0, 0), unsafe_allow_html=True)
-    with cols[4]:
-        starts = [wt_saved[w]["start_date"] for w in wt_saved]
-        ends = [wt_saved[w]["end_date"] for w in wt_saved]
-        period_label = f"{min(starts)}~{max(ends)}" if starts else target_month
-        month_actual = sum(c["expected_revenue"] for c in scope_consults if c["sched_date"][:7] == target_month)
-        st.markdown(target_card_html("총목표매출", period_label, total_target_saved, month_actual, highlight=True),
-                    unsafe_allow_html=True)
-
-assignee_pool = get_team_members()
-target_tabs = st.tabs(["전체"] + assignee_pool)
-for tab, scope_key in zip(target_tabs, ["전체"] + assignee_pool):
-    with tab:
-        render_target_dashboard(scope_key)
-
-st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-
-# ── 담당자별 실적 집계 ─────────────────────────────────────────
-st.markdown("""
-<div class="db-card">
-  <div class="db-card-title">📊 담당자별 실적</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
-    상담 일정에 등록된 담당자 기준으로 집계합니다.
-  </div>
-</div>""", unsafe_allow_html=True)
-
-period = st.radio("기간", ["오늘", "이번 주", "이번 달", "전체"], horizontal=True, label_visibility="collapsed")
-if period == "오늘":
-    period_consults = [c for c in consults if c["sched_date"] == today_str]
-elif period == "이번 주":
-    week_start = (today - timedelta(days=today.weekday())).isoformat()
-    period_consults = [c for c in consults if week_start <= c["sched_date"] <= today_str]
-elif period == "이번 달":
-    month_start = today.replace(day=1).isoformat()
-    period_consults = [c for c in consults if month_start <= c["sched_date"] <= today_str]
-else:
-    period_consults = consults
-
-perf = {}
-for c in period_consults:
-    who = c["assignee"] or "미지정"
-    p = perf.setdefault(who, {"건수": 0, "예정매출": 0, "정규": 0, "단과": 0})
-    p["건수"] += 1
-    p["예정매출"] += c["expected_revenue"]
-    p[c["ctype"]] = p.get(c["ctype"], 0) + 1
-
-if perf:
-    perf_df = pd.DataFrame([{"담당자": k, **v} for k, v in perf.items()]).sort_values("예정매출", ascending=False)
-    st.dataframe(perf_df, use_container_width=True, hide_index=True)
-else:
-    st.caption("해당 기간에 상담 데이터가 없어요.")
-
-st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 # ── 시간표 배정 자동화 ─────────────────────────────────────────
 st.markdown("""
@@ -1143,25 +1057,38 @@ if "cb_gen_seq" not in st.session_state:
     st.session_state["cb_gen_seq"] = 0
 cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
 
-with st.expander("🔍 날짜 클릭 → 그날 진행 중인 강좌 선택 (신규 배정용)", expanded=False):
+with st.expander("🔍 날짜 클릭 → 강의장×시간 그리드에서 강좌 선택 (신규 배정용)", expanded=False):
     pick_date = st.date_input("날짜", value=today, key="tt_pick_date")
     day_sessions = sessions_active_on(pick_date)
     if day_sessions:
-        by_time = {}
+        rooms = sorted({s["room"] for s in day_sessions})
+        times = sorted({s["start_time"] for s in day_sessions})
+        by_cell = {}
         for s in day_sessions:
-            by_time.setdefault(s["start_time"], []).append(s)
-        si = 0
-        for t in sorted(by_time):
-            st.markdown(f"""<div style='font-size:12px;font-weight:700;color:#4f46e5;margin:8px 0 4px'>
-                        🕐 {t}</div>""", unsafe_allow_html=True)
-            for s in sorted(by_time[t], key=lambda x: x["subject"]):
-                weekend = _is_weekend_days(s["days"])
-                label = f"{s['subject']} ({s['room']}, {s['teacher']}) 개강 {s['start_date']}" + ("  [주말]" if weekend else "")
-                key = f"ttpick_{si}_{cb_seq}"
-                st.checkbox(label, key=key)
-                candidates.append(dict(key=key, nd=s["start_date"],
-                                        nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
-                si += 1
+            by_cell.setdefault((s["room"], s["start_time"]), []).append(s)
+
+        ROOMS_PER_ROW = 6
+        for start in range(0, len(rooms), ROOMS_PER_ROW):
+            row_rooms = rooms[start:start + ROOMS_PER_ROW]
+            head_cols = st.columns(len(row_rooms))
+            for col, room in zip(head_cols, row_rooms):
+                col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
+                            background:#eef2ff;color:#4f46e5;border-radius:6px;padding:4px;margin-bottom:4px'>
+                            {room}</div>""", unsafe_allow_html=True)
+            for t in times:
+                if not any((room, t) in by_cell for room in row_rooms):
+                    continue
+                row_cols = st.columns(len(row_rooms))
+                for col, room in zip(row_cols, row_rooms):
+                    with col:
+                        for si, s in enumerate(by_cell.get((room, t), [])):
+                            weekend = _is_weekend_days(s["days"])
+                            label = f"{t} {s['subject']}" + (" [주말]" if weekend else "")
+                            key = f"ttpick_{room}_{t}_{si}_{cb_seq}"
+                            st.checkbox(label, key=key)
+                            candidates.append(dict(key=key, nd=s["start_date"],
+                                                    nt=s["start_time"], ns=s["subject"],
+                                                    nts="주말" if weekend else ""))
     else:
         st.caption("이 날짜에 진행 중인 강좌가 없어요.")
 
@@ -1264,22 +1191,48 @@ if candidates:
             st.caption("체크된 강좌가 없어요.")
 
 def _course_picker(label, key):
-    c1, c2 = st.columns([1, 2])
-    mode = c1.radio("찾기", ["날짜로", "검색으로"], key=f"{key}_mode", horizontal=True, label_visibility="collapsed")
-    if mode == "날짜로":
-        d = c2.date_input(label, value=today, key=f"{key}_date", label_visibility="collapsed")
-        opts = sessions_active_on(d)
-    else:
-        q = c2.text_input(label, key=f"{key}_q", placeholder=f"{label} 과목명 검색", label_visibility="collapsed")
-        opts = sorted([s for s in get_timetable() if q.strip() and q.strip() in s["subject"]],
-                      key=lambda s: (s["subject"], s["start_time"])) if q else []
-    if not opts:
-        st.caption("일치하는 강좌가 없어요.")
+    d = st.date_input(f"{label} 날짜", value=today, key=f"{key}_date", label_visibility="collapsed")
+    sessions = sessions_active_on(d)
+    if not sessions:
+        st.caption("이 날짜에 진행 중인 강좌가 없어요.")
         return None
-    labels = [f"{s['subject']} — {s['start_time']} ({s['room']}) 개강 {s['start_date']}" for s in opts]
-    idx = st.selectbox(f"{label} 강좌", range(len(opts)), format_func=lambda i: labels[i],
-                       key=f"{key}_sel", label_visibility="collapsed")
-    return opts[idx]
+
+    rooms = sorted({s["room"] for s in sessions})
+    times = sorted({s["start_time"] for s in sessions})
+    by_cell = {}
+    for i, s in enumerate(sessions):
+        by_cell.setdefault((s["room"], s["start_time"]), []).append((i, s))
+
+    sel_key = f"{key}_sel"
+    saved = st.session_state.get(sel_key)
+    cur_idx = saved[1] if saved and saved[0] == d.isoformat() else None
+
+    ROOMS_PER_ROW = 6
+    for start in range(0, len(rooms), ROOMS_PER_ROW):
+        row_rooms = rooms[start:start + ROOMS_PER_ROW]
+        head = st.columns(len(row_rooms))
+        for col, room in zip(head, row_rooms):
+            col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
+                        background:#eef2ff;color:#4f46e5;border-radius:6px;padding:4px;margin-bottom:4px'>
+                        {room}</div>""", unsafe_allow_html=True)
+        for t in times:
+            if not any((room, t) in by_cell for room in row_rooms):
+                continue
+            row = st.columns(len(row_rooms))
+            for col, room in zip(row, row_rooms):
+                with col:
+                    for i, s in by_cell.get((room, t), []):
+                        is_sel = cur_idx == i
+                        btn_label = ("✅ " if is_sel else "") + f"{t} {s['subject']}"
+                        if st.button(btn_label, key=f"{key}_cell_{i}", use_container_width=True):
+                            st.session_state[sel_key] = (d.isoformat(), i)
+                            st.rerun()
+
+    if cur_idx is not None and cur_idx < len(sessions):
+        chosen = sessions[cur_idx]
+        st.caption(f"선택됨: {chosen['subject']} ({chosen['room']}, {chosen['start_time']}~{chosen['end_time']}, {chosen['teacher']})")
+        return chosen
+    return None
 
 gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
                      label_visibility="collapsed")
@@ -1498,43 +1451,39 @@ ongoing_revenue = sum(c["expected_revenue"] for c in ongoing_today)
 upcoming_lines = "\n".join(f"{c['sched_time']} {c['visit_type']} {c['expected_revenue'] // 10000}"
                            for c in upcoming_today)
 
-pm3_default = f"""[{log['team_name']} 15:00 보고]
-{auto_revenue // 10000} / {today_rev // 10000}
-상담중 {ongoing_revenue // 10000}
-{upcoming_lines}
-익일상담 {tmr_cnt} / 익일예정 {tmr_rev // 10000}
-모레상담 {daf_cnt} / 모레예정 {daf_rev // 10000}
-익일면접 {log['interview_count']}건
-따즈아 {log['ddaz_num']} / {log['ddaz_den']}"""
+pm3_values = {
+    "팀명": log["team_name"],
+    "입금완료": auto_revenue // 10000,
+    "입금예정": today_rev // 10000,
+    "상담중": ongoing_revenue // 10000,
+    "상담목록": upcoming_lines,
+    "익일상담": tmr_cnt, "익일예정": tmr_rev // 10000,
+    "모레상담": daf_cnt, "모레예정": daf_rev // 10000,
+    "익일면접": log["interview_count"],
+    "따즈아분자": log["ddaz_num"], "따즈아분모": log["ddaz_den"],
+}
+pm3_tmpl = report_template_editor("15시보고", "tmpl_pm3", PM3_TEMPLATE_DEFAULT, pm3_values.keys())
+pm3_default = render_report_template(pm3_tmpl, pm3_values)
 
-close_default = f"""컴퓨터 {log['team_name']} 영업마감보고
-
- 상담 : {today_cnt}
- 등록 : {registered_ct}
- COD : {cod_ct}
- 미등록 : {unregistered_ct}
-
-금일매출결과 :{int(in_revenue):,}원
-환불 :{int(in_refund):,}원
-
-통화시간
-{log['rep1_name']} {log['rep1_call']} (상담 {today_cnt}건)
-{log['rep2_name']} {log['rep2_call']}
-
-익일예정상담 : {tmr_cnt}건
-익일예정매출 : {tmr_rev:,}원
-익일목표매출 : {log['tmr_target']:,}원
-
-{datetime.strptime(cycle_start, "%Y-%m-%d").month}월 팀목표매출 : {month_target_live:,}
-현재달성매출 : {month_achieved_live:,}
-현재달성율 : {pct}%"""
+close_values = {
+    "팀명": log["team_name"],
+    "상담건수": today_cnt, "등록": registered_ct, "COD": cod_ct, "미등록": unregistered_ct,
+    "금일매출": f"{int(in_revenue):,}", "환불": f"{int(in_refund):,}",
+    "담당자1": log["rep1_name"], "통화1": log["rep1_call"],
+    "담당자2": log["rep2_name"], "통화2": log["rep2_call"],
+    "익일상담": tmr_cnt, "익일매출": f"{tmr_rev:,}", "익일목표매출": f"{log['tmr_target']:,}",
+    "월": datetime.strptime(cycle_start, "%Y-%m-%d").month,
+    "팀목표매출": f"{month_target_live:,}", "현재달성매출": f"{month_achieved_live:,}", "달성율": pct,
+}
+close_tmpl = report_template_editor("마감보고", "tmpl_close", CLOSE_TEMPLATE_DEFAULT, close_values.keys())
+close_default = render_report_template(close_tmpl, close_values)
 
 # 보고서에 쓰인 원본 값이 바뀌면 아래 text_area가 자동으로 새로고침되도록,
 # 위젯 key에 데이터 지문(fingerprint)을 포함시킴. (안 그러면 Streamlit이
 # 이전에 렌더링된 위젯 값을 그대로 들고 있어서 값을 바꿔 저장해도
 # 미리보기 텍스트가 안 바뀌는 문제가 있었음)
 _fingerprint_src = "|".join(str(log.get(k, "")) for k in LOG_COLS)
-_fingerprint_src += f"|{cycle_start}|{cycle_target_saved}|{cycle_base_saved}"
+_fingerprint_src += f"|{cycle_start}|{cycle_target_saved}|{cycle_base_saved}|{pm3_tmpl}|{close_tmpl}"
 _fingerprint_src += "|" + "|".join(f"{c['id']}:{c['result_status']}:{c['actual_amount']}:{c['finalized']}"
                                     for c in consults)
 rt_key = hashlib.md5(_fingerprint_src.encode()).hexdigest()[:10]
