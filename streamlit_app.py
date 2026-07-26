@@ -211,6 +211,9 @@ def sessions_active_on(d):
     out = [s for s in get_timetable() if s["start_date"] <= ds <= s["end_date"]]
     return sorted(out, key=lambda s: (s["start_time"], s["subject"]))
 
+def _norm_subject(s):
+    return re.sub(r"\s+", "", s or "")
+
 def match_real_session(subject, start_date):
     # 개인 시간표(xlsx/이미지)에서 뽑아낸 값은 사람이 손으로 짠 계획이라 실제
     # 인트라넷 시간표와 요일·시간 표기가 다를 수 있어서, 과목명+개강일로
@@ -219,11 +222,15 @@ def match_real_session(subject, start_date):
     start_date = (start_date or "").strip()
     if not subject or not start_date:
         return None
+    norm_subject = _norm_subject(subject)
     same_date = [s for s in get_timetable() if s["start_date"] == start_date]
-    exact = [s for s in same_date if s["subject"] == subject]
+    # AI 인식이 "스케치업 1"처럼 과목명과 숫자 사이에 공백을 넣는 경우가 있어서
+    # 공백을 무시하고 비교함
+    exact = [s for s in same_date if _norm_subject(s["subject"]) == norm_subject]
     if exact:
         return exact[0]
-    partial = [s for s in same_date if subject in s["subject"] or s["subject"] in subject]
+    partial = [s for s in same_date
+               if norm_subject in _norm_subject(s["subject"]) or _norm_subject(s["subject"]) in norm_subject]
     return partial[0] if partial else None
 
 # ── 수강료표 파싱 ────────────────────────────────────────────
