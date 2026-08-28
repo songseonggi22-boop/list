@@ -934,6 +934,294 @@ section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"]>div:
 .sb-sec{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--color-muted);margin:16px 6px 4px}
 </style>""", unsafe_allow_html=True)
 
+def _course_picker(label, key):
+    months = available_months()
+    if not months:
+        st.caption("시간표 데이터가 없어요.")
+        return None
+
+    sel_key = f"{key}_sel"
+    saved = st.session_state.get(sel_key)  # (month, weekend, idx) or None
+
+    month_tabs = st.tabs(months)
+    for month, tab in zip(months, month_tabs):
+        with tab:
+            wd_choice = st.radio("구분", ["평일", "주말"], horizontal=True,
+                                  key=f"{key}_{month}_wd", label_visibility="collapsed")
+            weekend = wd_choice == "주말"
+            sessions = sessions_in_month(month, weekend)
+            if not sessions:
+                st.caption("해당 달에 이 구분의 강좌가 없어요.")
+                continue
+
+            rooms = sorted({s["room"] for s in sessions})
+            times = sorted({s["start_time"] for s in sessions})
+            by_cell = {}
+            for i, s in enumerate(sessions):
+                by_cell.setdefault((s["room"], s["start_time"]), []).append((i, s))
+
+            cur_idx = saved[2] if saved and saved[0] == month and saved[1] == weekend else None
+
+            ROOMS_PER_ROW = 6
+            for start in range(0, len(rooms), ROOMS_PER_ROW):
+                row_rooms = rooms[start:start + ROOMS_PER_ROW]
+                head = st.columns(len(row_rooms))
+                for col, room in zip(head, row_rooms):
+                    col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
+                                background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
+                                {room}</div>""", unsafe_allow_html=True)
+                for t in times:
+                    if not any((room, t) in by_cell for room in row_rooms):
+                        continue
+                    row = st.columns(len(row_rooms))
+                    for col, room in zip(row, row_rooms):
+                        with col:
+                            for i, s in by_cell.get((room, t), []):
+                                is_sel = cur_idx == i
+                                btn_label = (("✅ " if is_sel else "") +
+                                             f"{t} {s['subject']} ({s['start_date'][5:]}~{s['end_date'][5:]})")
+                                if st.button(btn_label, key=f"{key}_{month}_{weekend}_cell_{i}",
+                                             use_container_width=True):
+                                    st.session_state[sel_key] = (month, weekend, i)
+                                    st.rerun()
+
+    if saved:
+        s_month, s_weekend, s_idx = saved
+        sessions = sessions_in_month(s_month, s_weekend)
+        if s_idx < len(sessions):
+            chosen = sessions[s_idx]
+            st.caption(f"선택됨: {chosen['subject']} ({chosen['room']}, {chosen['start_time']}~{chosen['end_time']}, "
+                       f"{chosen['teacher']}, 개강 {chosen['start_date']})")
+            return chosen
+    return None
+
+def render_assign_automation():
+    # ── 시간표 배정 자동화 ─────────────────────────────────────────
+    st.markdown("""
+    <div class="db-card">
+      <div class="db-card-title">📋 시간표 배정 자동화</div>
+      <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
+        정보 입력 → 배정 문구 자동 생성 후 복사
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    candidates = []  # 체크박스로 선택된 강좌 → 아래 "선택한 강좌 배정 문구 생성"에서 일괄 처리
+    if "cb_gen_seq" not in st.session_state:
+        st.session_state["cb_gen_seq"] = 0
+    cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
+
+    with st.expander("🔍 강의장×시간 그리드에서 강좌 선택 (신규 배정용)", expanded=False):
+        grid_months = available_months()
+        if not grid_months:
+            st.caption("시간표 데이터가 없어요.")
+        else:
+            grid_month_tabs = st.tabs(grid_months)
+            for gmonth, gtab in zip(grid_months, grid_month_tabs):
+                with gtab:
+                    gwd_choice = st.radio("구분", ["평일", "주말"], horizontal=True,
+                                           key=f"ttpick_{gmonth}_wd", label_visibility="collapsed")
+                    gweekend = gwd_choice == "주말"
+                    month_sessions = sessions_in_month(gmonth, gweekend)
+                    if not month_sessions:
+                        st.caption("해당 달에 이 구분의 강좌가 없어요.")
+                        continue
+
+                    rooms = sorted({s["room"] for s in month_sessions})
+                    times = sorted({s["start_time"] for s in month_sessions})
+                    by_cell = {}
+                    for s in month_sessions:
+                        by_cell.setdefault((s["room"], s["start_time"]), []).append(s)
+
+                    ROOMS_PER_ROW = 6
+                    for start in range(0, len(rooms), ROOMS_PER_ROW):
+                        row_rooms = rooms[start:start + ROOMS_PER_ROW]
+                        head_cols = st.columns(len(row_rooms))
+                        for col, room in zip(head_cols, row_rooms):
+                            col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
+                                        background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
+                                        {room}</div>""", unsafe_allow_html=True)
+                        for t in times:
+                            if not any((room, t) in by_cell for room in row_rooms):
+                                continue
+                            row_cols = st.columns(len(row_rooms))
+                            for col, room in zip(row_cols, row_rooms):
+                                with col:
+                                    for si, s in enumerate(by_cell.get((room, t), [])):
+                                        weekend = _is_weekend_days(s["days"])
+                                        label = (f"{t} {s['subject']} ({s['start_date'][5:]}~{s['end_date'][5:]})"
+                                                 + (" [주말]" if weekend else ""))
+                                        key = f"ttpick_{gmonth}_{gweekend}_{room}_{t}_{si}_{cb_seq}"
+                                        st.checkbox(label, key=key)
+                                        candidates.append(dict(key=key, nd=s["start_date"],
+                                                                nt=s["start_time"], ns=s["subject"],
+                                                                nts="주말" if weekend else ""))
+
+    with st.expander("🔎 과목명으로 검색 (신규 배정용)"):
+        search_q = st.text_input("과목명/강사명 검색", key="tt_search_q")
+        if search_q:
+            hits = [s for s in get_timetable()
+                    if search_q.strip() in s["subject"] or search_q.strip() in s["teacher"]]
+            hits = sorted(hits, key=lambda s: (s["subject"], s["start_time"]))
+            if hits:
+                for i, s in enumerate(hits):
+                    weekend = _is_weekend_days(s["days"])
+                    label = (f"{s['subject']} — {s['start_time']} ({s['room']}, {s['teacher']}) "
+                             f"개강 {s['start_date']}~종강 {s['end_date']}") + ("  [주말]" if weekend else "")
+                    key = f"ttsearch_{i}_{cb_seq}"
+                    st.checkbox(label, key=key)
+                    candidates.append(dict(key=key, nd=s["start_date"],
+                                            nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
+            else:
+                st.caption("일치하는 강좌가 없어요.")
+
+    with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 배정용)"):
+        upl = st.file_uploader("개인 시간표(xlsx)", type=["xlsx"], key="personal_tt_upl")
+        if upl:
+            try:
+                student, courses = parse_personal_timetable(upl)
+            except Exception as e:
+                student, courses = "", []
+                st.error(f"파일을 읽지 못했어요: {e}")
+            if student:
+                st.caption(f"{student}님의 시간표에서 {len(courses)}개 강좌를 찾았어요.")
+            if courses:
+                for i, c in enumerate(courses):
+                    matched = match_real_session(c["subject"], c["start_date"])
+                    if matched:
+                        weekend = _is_weekend_days(matched["days"])
+                        label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
+                                 f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
+                        nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
+                    else:
+                        weekend = _is_weekend_days(c["days"])
+                        label = (f"{c['subject']} — {c['start_time']} 개강 {c['start_date']}"
+                                 + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(입력값 그대로 사용)")
+                        nd, nt, ns = c["start_date"], c["start_time"], c["subject"]
+                    key = f"pt_pick_{i}_{cb_seq}"
+                    st.checkbox(label, key=key)
+                    candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
+            elif upl and not student:
+                st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
+
+    with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)"):
+        st.caption("AI가 이미지를 읽어서 추출하는 거라 100% 정확하진 않아요. 채워진 값을 확인하고 쓰세요.")
+
+        from streamlit_paste_button import paste_image_button
+        if "tt_img_seq" not in st.session_state:
+            st.session_state["tt_img_seq"] = 0
+        seq = st.session_state["tt_img_seq"]
+
+        paste_result = paste_image_button("📋 클립보드에서 붙여넣기", key=f"tt_img_paste_{seq}")
+        img = st.file_uploader("또는 파일로 업로드", type=["png", "jpg", "jpeg"], key=f"tt_img_upl_{seq}")
+
+        if paste_result.image_data is not None:
+            buf = io.BytesIO()
+            paste_result.image_data.save(buf, format="PNG")
+            st.session_state["tt_img_bytes"] = buf.getvalue()
+            st.session_state["tt_img_mime"] = "image/png"
+            st.session_state["tt_img_seq"] += 1  # 다음 붙여넣기가 되도록 컴포넌트 재마운트
+        elif img:
+            st.session_state["tt_img_bytes"] = img.getvalue()
+            st.session_state["tt_img_mime"] = img.type
+
+        image_bytes = st.session_state.get("tt_img_bytes")
+        mime_type = st.session_state.get("tt_img_mime", "image/png")
+
+        if image_bytes:
+            st.image(image_bytes, caption="붙여넣은(또는 업로드한) 이미지", width=300)
+
+        if image_bytes and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
+            try:
+                st.session_state["tt_img_results"] = parse_timetable_image(image_bytes, mime_type)
+            except Exception as e:
+                st.session_state["tt_img_results"] = []
+                st.error(f"인식 실패: {e}")
+
+        img_results = st.session_state.get("tt_img_results")
+        if img_results:
+            for i, c in enumerate(img_results):
+                matched = match_real_session(c.get("subject", ""), c.get("start_date", ""))
+                if matched:
+                    weekend = _is_weekend_days(matched["days"])
+                    label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
+                             f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
+                    nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
+                else:
+                    weekend = _is_weekend_days(_expand_days(c.get("day_label", "")))
+                    label = (f"{c.get('subject','')} — {c.get('start_time','')} 개강 {c.get('start_date','')}"
+                             + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(인식값 그대로 사용)")
+                    nd, nt, ns = c.get("start_date", ""), c.get("start_time", ""), c.get("subject", "")
+                key = f"img_pick_{i}_{cb_seq}"
+                st.checkbox(label, key=key)
+                candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
+        elif img_results is not None:
+            st.caption("인식된 강좌가 없어요.")
+
+    if candidates:
+        if st.button("✅ 체크한 강좌 배정 문구 생성 (여러 개 누적 가능)", use_container_width=True, key="gen_checked"):
+            picked = [c for c in candidates if st.session_state.get(c["key"])]
+            if picked:
+                lines = [gen_text("신규", nd=c["nd"] or today.isoformat(), nt=c["nt"], ns=c["ns"], nts=c["nts"])
+                          for c in picked]
+                new_text = "\n".join(lines)
+                ss.assign_out = (ss.assign_out + "\n" + new_text) if ss.assign_out else new_text
+                st.session_state["cb_gen_seq"] += 1  # 체크박스 전부 재마운트해 초기화 (중복 누적 방지)
+                st.rerun()
+            else:
+                st.caption("체크된 강좌가 없어요.")
+
+    gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
+                         label_visibility="collapsed")
+    result = ""
+
+    if gtype == "신규 배정":
+        with st.form("g1"):
+            c1,c2,c3,c4 = st.columns(4)
+            nd  = c1.date_input("날짜*", value=today, key="g1_nd")
+            nt  = c2.text_input("시간*", placeholder="12:00", key="g1_nt")
+            ns  = c3.text_input("과목명*", placeholder="스케치업2", key="g1_ns")
+            nts = c4.text_input("시간대", placeholder="주말", key="g1_nts")
+            if st.form_submit_button("✨ 문구 생성", use_container_width=True):
+                result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
+
+    elif gtype == "과목변경 배정":
+        st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 강좌</div>", unsafe_allow_html=True)
+        old_s = _course_picker("이전", "cg_old")
+        st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 강좌</div>", unsafe_allow_html=True)
+        new_s = _course_picker("변경 후", "cg_new")
+        if old_s and new_s:
+            auto_ofee = lookup_fee(old_s["subject"], _is_weekend_days(old_s["days"])) or 0
+            auto_nfee = lookup_fee(new_s["subject"], _is_weekend_days(new_s["days"])) or 0
+            c1, c2 = st.columns(2)
+            ofee = money_input(f"이전 수강료 (자동조회: {auto_ofee:,}원)", auto_ofee, "cg_ofee", c1)
+            nfee = money_input(f"변경 후 수강료 (자동조회: {auto_nfee:,}원)", auto_nfee, "cg_nfee", c2)
+            if st.button("✨ 문구 생성", use_container_width=True, key="cg_gen"):
+                result = gen_text("과목변경", os_=old_s["subject"], ofee=int(ofee),
+                                  nd=new_s["start_date"], nt=new_s["start_time"], ns=new_s["subject"],
+                                  nts="주말" if _is_weekend_days(new_s["days"]) else "", nfee=int(nfee))
+
+    elif gtype == "배정 취소":
+        cancel_s = _course_picker("취소할", "cx")
+        if cancel_s and st.button("✨ 문구 생성", use_container_width=True, key="cx_gen"):
+            result = gen_text("취소", od=cancel_s["start_date"], ot=cancel_s["start_time"], os_=cancel_s["subject"])
+
+    elif gtype == "날짜변경 배정":
+        st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
+        old_s = _course_picker("이전", "dc_old")
+        st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 일정</div>", unsafe_allow_html=True)
+        new_s = _course_picker("변경 후", "dc_new")
+        if old_s and new_s and st.button("✨ 문구 생성", use_container_width=True, key="dc_gen"):
+            result = gen_text("날짜변경", od=old_s["start_date"], ot=old_s["start_time"], os_=old_s["subject"],
+                              nd=new_s["start_date"], nt=new_s["start_time"])
+
+    if result: ss.assign_out = result
+    if ss.assign_out:
+        lines_n = ss.assign_out.count("\n") + 1
+        st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=max(80, min(400, 30 * lines_n)))
+        if st.button("🗑 초기화"):
+            ss.assign_out = ""; st.rerun()
+
+
 # ── 좌측 사이드바 nav (클로드놀이_배포판 index.html 앱셸) ──────────
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
@@ -999,6 +1287,12 @@ if page in _TT_MENU:
                 "style='display:inline-block;margin:2px 0 8px;font-size:12px;font-weight:600;color:var(--color-primary);"
                 "border:1px solid var(--color-border);border-radius:8px;padding:6px 12px;text-decoration:none'>"
                 "🔗 전체 화면 새 탭에서 열기</a>", unsafe_allow_html=True)
+
+    if _hash == "assign":
+        # 홈에서 옮겨온 '시간표 배정 자동화' (이미지/개인시간표 인식 → 배정 문구 생성)
+        render_assign_automation()
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.caption("↓ 클로드놀이_배포판 강의배정 화면 (칸 선택 → 하단 막대 '배정 진행')")
 
     render_timetable_tool(_hash, preload=_ups or None)
     st.stop()
@@ -1288,291 +1582,6 @@ with right:
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
 
-# ── 시간표 배정 자동화 ─────────────────────────────────────────
-st.markdown("""
-<div class="db-card">
-  <div class="db-card-title">📋 시간표 배정 자동화</div>
-  <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
-    정보 입력 → 배정 문구 자동 생성 후 복사
-  </div>
-</div>""", unsafe_allow_html=True)
-
-candidates = []  # 체크박스로 선택된 강좌 → 아래 "선택한 강좌 배정 문구 생성"에서 일괄 처리
-if "cb_gen_seq" not in st.session_state:
-    st.session_state["cb_gen_seq"] = 0
-cb_seq = st.session_state["cb_gen_seq"]  # 생성 후 체크박스 초기화(재마운트)용
-
-with st.expander("🔍 강의장×시간 그리드에서 강좌 선택 (신규 배정용)", expanded=False):
-    grid_months = available_months()
-    if not grid_months:
-        st.caption("시간표 데이터가 없어요.")
-    else:
-        grid_month_tabs = st.tabs(grid_months)
-        for gmonth, gtab in zip(grid_months, grid_month_tabs):
-            with gtab:
-                gwd_choice = st.radio("구분", ["평일", "주말"], horizontal=True,
-                                       key=f"ttpick_{gmonth}_wd", label_visibility="collapsed")
-                gweekend = gwd_choice == "주말"
-                month_sessions = sessions_in_month(gmonth, gweekend)
-                if not month_sessions:
-                    st.caption("해당 달에 이 구분의 강좌가 없어요.")
-                    continue
-
-                rooms = sorted({s["room"] for s in month_sessions})
-                times = sorted({s["start_time"] for s in month_sessions})
-                by_cell = {}
-                for s in month_sessions:
-                    by_cell.setdefault((s["room"], s["start_time"]), []).append(s)
-
-                ROOMS_PER_ROW = 6
-                for start in range(0, len(rooms), ROOMS_PER_ROW):
-                    row_rooms = rooms[start:start + ROOMS_PER_ROW]
-                    head_cols = st.columns(len(row_rooms))
-                    for col, room in zip(head_cols, row_rooms):
-                        col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
-                                    background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
-                                    {room}</div>""", unsafe_allow_html=True)
-                    for t in times:
-                        if not any((room, t) in by_cell for room in row_rooms):
-                            continue
-                        row_cols = st.columns(len(row_rooms))
-                        for col, room in zip(row_cols, row_rooms):
-                            with col:
-                                for si, s in enumerate(by_cell.get((room, t), [])):
-                                    weekend = _is_weekend_days(s["days"])
-                                    label = (f"{t} {s['subject']} ({s['start_date'][5:]}~{s['end_date'][5:]})"
-                                             + (" [주말]" if weekend else ""))
-                                    key = f"ttpick_{gmonth}_{gweekend}_{room}_{t}_{si}_{cb_seq}"
-                                    st.checkbox(label, key=key)
-                                    candidates.append(dict(key=key, nd=s["start_date"],
-                                                            nt=s["start_time"], ns=s["subject"],
-                                                            nts="주말" if weekend else ""))
-
-with st.expander("🔎 과목명으로 검색 (신규 배정용)"):
-    search_q = st.text_input("과목명/강사명 검색", key="tt_search_q")
-    if search_q:
-        hits = [s for s in get_timetable()
-                if search_q.strip() in s["subject"] or search_q.strip() in s["teacher"]]
-        hits = sorted(hits, key=lambda s: (s["subject"], s["start_time"]))
-        if hits:
-            for i, s in enumerate(hits):
-                weekend = _is_weekend_days(s["days"])
-                label = (f"{s['subject']} — {s['start_time']} ({s['room']}, {s['teacher']}) "
-                         f"개강 {s['start_date']}~종강 {s['end_date']}") + ("  [주말]" if weekend else "")
-                key = f"ttsearch_{i}_{cb_seq}"
-                st.checkbox(label, key=key)
-                candidates.append(dict(key=key, nd=s["start_date"],
-                                        nt=s["start_time"], ns=s["subject"], nts="주말" if weekend else ""))
-        else:
-            st.caption("일치하는 강좌가 없어요.")
-
-with st.expander("📎 개인 시간표 업로드해서 강좌 선택 (신규 배정용)"):
-    upl = st.file_uploader("개인 시간표(xlsx)", type=["xlsx"], key="personal_tt_upl")
-    if upl:
-        try:
-            student, courses = parse_personal_timetable(upl)
-        except Exception as e:
-            student, courses = "", []
-            st.error(f"파일을 읽지 못했어요: {e}")
-        if student:
-            st.caption(f"{student}님의 시간표에서 {len(courses)}개 강좌를 찾았어요.")
-        if courses:
-            for i, c in enumerate(courses):
-                matched = match_real_session(c["subject"], c["start_date"])
-                if matched:
-                    weekend = _is_weekend_days(matched["days"])
-                    label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
-                             f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
-                    nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
-                else:
-                    weekend = _is_weekend_days(c["days"])
-                    label = (f"{c['subject']} — {c['start_time']} 개강 {c['start_date']}"
-                             + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(입력값 그대로 사용)")
-                    nd, nt, ns = c["start_date"], c["start_time"], c["subject"]
-                key = f"pt_pick_{i}_{cb_seq}"
-                st.checkbox(label, key=key)
-                candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
-        elif upl and not student:
-            st.caption("강좌 정보를 찾지 못했어요. 파일 형식을 확인해주세요.")
-
-with st.expander("🖼️ 시간표 이미지 업로드 (AI 인식, 실험적)"):
-    st.caption("AI가 이미지를 읽어서 추출하는 거라 100% 정확하진 않아요. 채워진 값을 확인하고 쓰세요.")
-
-    from streamlit_paste_button import paste_image_button
-    if "tt_img_seq" not in st.session_state:
-        st.session_state["tt_img_seq"] = 0
-    seq = st.session_state["tt_img_seq"]
-
-    paste_result = paste_image_button("📋 클립보드에서 붙여넣기", key=f"tt_img_paste_{seq}")
-    img = st.file_uploader("또는 파일로 업로드", type=["png", "jpg", "jpeg"], key=f"tt_img_upl_{seq}")
-
-    if paste_result.image_data is not None:
-        buf = io.BytesIO()
-        paste_result.image_data.save(buf, format="PNG")
-        st.session_state["tt_img_bytes"] = buf.getvalue()
-        st.session_state["tt_img_mime"] = "image/png"
-        st.session_state["tt_img_seq"] += 1  # 다음 붙여넣기가 되도록 컴포넌트 재마운트
-    elif img:
-        st.session_state["tt_img_bytes"] = img.getvalue()
-        st.session_state["tt_img_mime"] = img.type
-
-    image_bytes = st.session_state.get("tt_img_bytes")
-    mime_type = st.session_state.get("tt_img_mime", "image/png")
-
-    if image_bytes:
-        st.image(image_bytes, caption="붙여넣은(또는 업로드한) 이미지", width=300)
-
-    if image_bytes and st.button("이미지에서 강좌 인식하기", key="tt_img_go"):
-        try:
-            st.session_state["tt_img_results"] = parse_timetable_image(image_bytes, mime_type)
-        except Exception as e:
-            st.session_state["tt_img_results"] = []
-            st.error(f"인식 실패: {e}")
-
-    img_results = st.session_state.get("tt_img_results")
-    if img_results:
-        for i, c in enumerate(img_results):
-            matched = match_real_session(c.get("subject", ""), c.get("start_date", ""))
-            if matched:
-                weekend = _is_weekend_days(matched["days"])
-                label = (f"{matched['subject']} — {matched['start_time']} ({matched['room']}, {matched['teacher']}) "
-                         f"개강 {matched['start_date']}" + ("  [주말]" if weekend else "") + "  ✅ 시간표에서 찾음")
-                nd, nt, ns = matched["start_date"], matched["start_time"], matched["subject"]
-            else:
-                weekend = _is_weekend_days(_expand_days(c.get("day_label", "")))
-                label = (f"{c.get('subject','')} — {c.get('start_time','')} 개강 {c.get('start_date','')}"
-                         + ("  [주말]" if weekend else "") + "  ⚠️ 시간표에서 못 찾음(인식값 그대로 사용)")
-                nd, nt, ns = c.get("start_date", ""), c.get("start_time", ""), c.get("subject", "")
-            key = f"img_pick_{i}_{cb_seq}"
-            st.checkbox(label, key=key)
-            candidates.append(dict(key=key, nd=nd, nt=nt, ns=ns, nts="주말" if weekend else ""))
-    elif img_results is not None:
-        st.caption("인식된 강좌가 없어요.")
-
-if candidates:
-    if st.button("✅ 체크한 강좌 배정 문구 생성 (여러 개 누적 가능)", use_container_width=True, key="gen_checked"):
-        picked = [c for c in candidates if st.session_state.get(c["key"])]
-        if picked:
-            lines = [gen_text("신규", nd=c["nd"] or today.isoformat(), nt=c["nt"], ns=c["ns"], nts=c["nts"])
-                      for c in picked]
-            new_text = "\n".join(lines)
-            ss.assign_out = (ss.assign_out + "\n" + new_text) if ss.assign_out else new_text
-            st.session_state["cb_gen_seq"] += 1  # 체크박스 전부 재마운트해 초기화 (중복 누적 방지)
-            st.rerun()
-        else:
-            st.caption("체크된 강좌가 없어요.")
-
-def _course_picker(label, key):
-    months = available_months()
-    if not months:
-        st.caption("시간표 데이터가 없어요.")
-        return None
-
-    sel_key = f"{key}_sel"
-    saved = st.session_state.get(sel_key)  # (month, weekend, idx) or None
-
-    month_tabs = st.tabs(months)
-    for month, tab in zip(months, month_tabs):
-        with tab:
-            wd_choice = st.radio("구분", ["평일", "주말"], horizontal=True,
-                                  key=f"{key}_{month}_wd", label_visibility="collapsed")
-            weekend = wd_choice == "주말"
-            sessions = sessions_in_month(month, weekend)
-            if not sessions:
-                st.caption("해당 달에 이 구분의 강좌가 없어요.")
-                continue
-
-            rooms = sorted({s["room"] for s in sessions})
-            times = sorted({s["start_time"] for s in sessions})
-            by_cell = {}
-            for i, s in enumerate(sessions):
-                by_cell.setdefault((s["room"], s["start_time"]), []).append((i, s))
-
-            cur_idx = saved[2] if saved and saved[0] == month and saved[1] == weekend else None
-
-            ROOMS_PER_ROW = 6
-            for start in range(0, len(rooms), ROOMS_PER_ROW):
-                row_rooms = rooms[start:start + ROOMS_PER_ROW]
-                head = st.columns(len(row_rooms))
-                for col, room in zip(head, row_rooms):
-                    col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
-                                background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
-                                {room}</div>""", unsafe_allow_html=True)
-                for t in times:
-                    if not any((room, t) in by_cell for room in row_rooms):
-                        continue
-                    row = st.columns(len(row_rooms))
-                    for col, room in zip(row, row_rooms):
-                        with col:
-                            for i, s in by_cell.get((room, t), []):
-                                is_sel = cur_idx == i
-                                btn_label = (("✅ " if is_sel else "") +
-                                             f"{t} {s['subject']} ({s['start_date'][5:]}~{s['end_date'][5:]})")
-                                if st.button(btn_label, key=f"{key}_{month}_{weekend}_cell_{i}",
-                                             use_container_width=True):
-                                    st.session_state[sel_key] = (month, weekend, i)
-                                    st.rerun()
-
-    if saved:
-        s_month, s_weekend, s_idx = saved
-        sessions = sessions_in_month(s_month, s_weekend)
-        if s_idx < len(sessions):
-            chosen = sessions[s_idx]
-            st.caption(f"선택됨: {chosen['subject']} ({chosen['room']}, {chosen['start_time']}~{chosen['end_time']}, "
-                       f"{chosen['teacher']}, 개강 {chosen['start_date']})")
-            return chosen
-    return None
-
-gtype = st.selectbox("배정 유형", ["신규 배정","과목변경 배정","배정 취소","날짜변경 배정"],
-                     label_visibility="collapsed")
-result = ""
-
-if gtype == "신규 배정":
-    with st.form("g1"):
-        c1,c2,c3,c4 = st.columns(4)
-        nd  = c1.date_input("날짜*", value=today, key="g1_nd")
-        nt  = c2.text_input("시간*", placeholder="12:00", key="g1_nt")
-        ns  = c3.text_input("과목명*", placeholder="스케치업2", key="g1_ns")
-        nts = c4.text_input("시간대", placeholder="주말", key="g1_nts")
-        if st.form_submit_button("✨ 문구 생성", use_container_width=True):
-            result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
-
-elif gtype == "과목변경 배정":
-    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 강좌</div>", unsafe_allow_html=True)
-    old_s = _course_picker("이전", "cg_old")
-    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 강좌</div>", unsafe_allow_html=True)
-    new_s = _course_picker("변경 후", "cg_new")
-    if old_s and new_s:
-        auto_ofee = lookup_fee(old_s["subject"], _is_weekend_days(old_s["days"])) or 0
-        auto_nfee = lookup_fee(new_s["subject"], _is_weekend_days(new_s["days"])) or 0
-        c1, c2 = st.columns(2)
-        ofee = money_input(f"이전 수강료 (자동조회: {auto_ofee:,}원)", auto_ofee, "cg_ofee", c1)
-        nfee = money_input(f"변경 후 수강료 (자동조회: {auto_nfee:,}원)", auto_nfee, "cg_nfee", c2)
-        if st.button("✨ 문구 생성", use_container_width=True, key="cg_gen"):
-            result = gen_text("과목변경", os_=old_s["subject"], ofee=int(ofee),
-                              nd=new_s["start_date"], nt=new_s["start_time"], ns=new_s["subject"],
-                              nts="주말" if _is_weekend_days(new_s["days"]) else "", nfee=int(nfee))
-
-elif gtype == "배정 취소":
-    cancel_s = _course_picker("취소할", "cx")
-    if cancel_s and st.button("✨ 문구 생성", use_container_width=True, key="cx_gen"):
-        result = gen_text("취소", od=cancel_s["start_date"], ot=cancel_s["start_time"], os_=cancel_s["subject"])
-
-elif gtype == "날짜변경 배정":
-    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
-    old_s = _course_picker("이전", "dc_old")
-    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 일정</div>", unsafe_allow_html=True)
-    new_s = _course_picker("변경 후", "dc_new")
-    if old_s and new_s and st.button("✨ 문구 생성", use_container_width=True, key="dc_gen"):
-        result = gen_text("날짜변경", od=old_s["start_date"], ot=old_s["start_time"], os_=old_s["subject"],
-                          nd=new_s["start_date"], nt=new_s["start_time"])
-
-if result: ss.assign_out = result
-if ss.assign_out:
-    lines_n = ss.assign_out.count("\n") + 1
-    st.text_area("📋 생성된 배정 문구 (복사하세요)", value=ss.assign_out, height=max(80, min(400, 30 * lines_n)))
-    if st.button("🗑 초기화"):
-        ss.assign_out = ""; st.rerun()
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
