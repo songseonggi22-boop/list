@@ -390,6 +390,9 @@ def get_db():
         PRIMARY KEY (month, week_no, assignee));
     """)
     c.commit()
+    # 조직 개편: 2-3팀 → 2-2팀 (2026-08). 기존 행/GitHub 백업 DB에도 반영 (idempotent)
+    c.execute("UPDATE daily_log SET team_name='2-2팀' WHERE team_name='2-3팀'")
+    c.commit()
     try:
         c.execute("ALTER TABLE consultations ADD COLUMN ctype TEXT DEFAULT '단과'")
         c.commit()
