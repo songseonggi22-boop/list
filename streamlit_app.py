@@ -368,7 +368,7 @@ def get_db():
 
     CREATE TABLE IF NOT EXISTS daily_log(
         log_date TEXT PRIMARY KEY,
-        team_name TEXT DEFAULT '2-3팀',
+        team_name TEXT DEFAULT '2-2팀',
         rep1_name TEXT DEFAULT '', rep1_pct INTEGER DEFAULT 60,
         rep2_name TEXT DEFAULT '',
         rep1_call TEXT DEFAULT '', rep2_call TEXT DEFAULT '',
@@ -543,7 +543,7 @@ def get_log(d):
         return dict(zip(LOG_COLS, rows[0]))
     prev = q(f"SELECT {','.join(LOG_COLS)} FROM daily_log ORDER BY log_date DESC LIMIT 1")
     base = dict(zip(LOG_COLS, prev[0])) if prev else {}
-    new_row = dict(log_date=d, team_name=base.get("team_name", "2-3팀"),
+    new_row = dict(log_date=d, team_name=base.get("team_name", "2-2팀"),
                     rep1_name=base.get("rep1_name", ""), rep1_pct=base.get("rep1_pct", 60),
                     rep2_name=base.get("rep2_name", ""), rep1_call="", rep2_call="",
                     done_count=0, registered=0, cod=0, unregistered=0, actual_revenue=0, refund=0,
