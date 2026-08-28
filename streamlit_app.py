@@ -870,15 +870,15 @@ section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"]>div:
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표"]
+    PAGES = ["🏠 홈", "📅 시간표"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
-# 시간표 도구 4개 메뉴 → 개강안내.html embed (홈이 아니면 여기서 렌더 후 종료)
-_TT_HASH = {"📅 강의시간표": "", "🎯 강의배정": "assign", "📄 개강안내문": "announce", "🗓️ 상담시간표": "consult"}
-if page in _TT_HASH:
-    st.markdown(f"#### {page.split(' ',1)[1]}")
-    render_timetable_tool(_TT_HASH[page])
-    st.caption("클로드놀이_배포판 개강안내 도구를 그대로 불러온 화면입니다. 엑셀 업로드·셀 클릭·복사·PNG 저장 모두 이 안에서 동작합니다.")
+# 시간표 = 개강안내.html 을 하나의 embed 로 (도구 자체 상단 탭: 시간표/강의배정/개강안내문/상담시간표).
+# ※ 메뉴를 4개로 쪼개면 각각 별도 iframe 이라 업로드한 엑셀이 공유 안 됨 → 한 embed 로 유지.
+if page == "📅 시간표":
+    st.markdown("#### 시간표 · 강의배정 · 개강안내문 · 상담시간표")
+    st.caption("맨 위 탭으로 네 화면을 오갑니다. **엑셀은 '파일 업로드' 탭에서 한 번만 올리면** 나머지 탭에 모두 반영됩니다. 셀 클릭·복사·PNG 저장 전부 이 안에서 동작.")
+    render_timetable_tool("")
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
