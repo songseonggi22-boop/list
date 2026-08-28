@@ -104,6 +104,19 @@ def _parse_cell(text, room, time_label):
                 cap=int(m.group("cap")), enrolled=int(m.group("enrolled")),
                 assigned=int(m.group("assigned")), start_time=time_label)
 
+@st.cache_data
+def _tt_folder_b64():
+    """`인트라넷 시간표/` 폴더의 xls 를 (name, base64) 로. 임베드 도구 preload 폴백용 (저장소에 커밋돼 팀원 모두 동일)."""
+    import base64
+    out = []
+    for p in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
+        try:
+            with open(p, "rb") as f:
+                out.append((os.path.basename(p), base64.b64encode(f.read()).decode()))
+        except Exception:
+            pass
+    return out
+
 def _tt_source_htmls():
     """시간표 원본 (name, html_text) 목록. DB 업로드분이 있으면 그것만, 없으면 `인트라넷 시간표/` 폴더. (캐시 안 함 — 업로드 반영)"""
     import base64
@@ -1260,7 +1273,11 @@ if page in _TT_MENU:
             if st.button("전체 삭제 (인트라넷 시간표/ 폴더 기본값으로)"):
                 clear_tt_uploads(); st.rerun()
         elif not _ups:
-            st.info("업로드 없음 — 저장소 `인트라넷 시간표/` 폴더 파일을 기본으로 씁니다.")
+            st.info(f"업로드 없음 — 저장소 `인트라넷 시간표/` 폴더의 파일 {len(_tt_folder_b64())}개를 자동으로 씁니다 (팀원 모두 동일). "
+                    "따로 올리면 그게 우선 적용됩니다.")
+
+    # 임베드 도구에 넣을 파일: DB 업로드분 우선, 없으면 인트라넷 시간표/ 폴더 파일 (커밋돼 팀 공유)
+    _preload = _ups or _tt_folder_b64()
 
     _tips = {
         "timetable": "월/평일·주말 필터로 강의를 봅니다. 강의를 선택해 문서를 만들려면 **강의배정 / 개강안내문 / 상담시간표** 메뉴로 가세요.",
@@ -1270,11 +1287,11 @@ if page in _TT_MENU:
     }
     st.caption(_tips[_hash] + " 인쇄·PNG가 이 화면에서 막히면 아래 **‘전체 화면 새 탭’** 링크로 여세요.")
 
-    # 전체 화면 새 탭 링크 (같은 도구 + 업로드 파일 주입) — iframe sandbox에서 인쇄/PNG 막힐 때
+    # 전체 화면 새 탭 링크 (같은 도구 + 시간표 파일 주입) — iframe sandbox에서 인쇄/PNG 막힐 때
     import base64 as _b64m
     _full = _tt_tool_html()
-    if _ups:
-        _fjs = json.dumps([{"name": n, "b64": b} for n, b in _ups], ensure_ascii=False)
+    if _preload:
+        _fjs = json.dumps([{"name": n, "b64": b} for n, b in _preload], ensure_ascii=False)
         _full += ("<script>(function(){var FS=" + _fjs + ";async function p(){try{"
                   "if(typeof loadFileAuto!=='function'){setTimeout(p,150);return;}"
                   "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
@@ -1294,7 +1311,9 @@ if page in _TT_MENU:
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         st.caption("↓ 클로드놀이_배포판 강의배정 화면 (칸 선택 → 하단 막대 '배정 진행')")
 
-    render_timetable_tool(_hash, preload=_ups or None)
+    if _preload and not _ups:
+        st.caption(f"⏳ `인트라넷 시간표/` 폴더 {len(_preload)}개 파일을 도구에 불러오는 중 — 목록이 뜨기까지 몇 초 걸릴 수 있습니다.")
+    render_timetable_tool(_hash, preload=_preload or None)
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
