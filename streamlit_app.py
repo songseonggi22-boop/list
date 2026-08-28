@@ -471,6 +471,10 @@ def get_db():
         name TEXT PRIMARY KEY,
         content_b64 TEXT NOT NULL,
         uploaded_at INTEGER DEFAULT 0);
+
+    CREATE TABLE IF NOT EXISTS lunch(
+        person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
+        PRIMARY KEY(person, ymd));
     """)
     c.commit()
     # 조직 개편: 2-3팀 → 2-2팀 (2026-08). 기존 행/GitHub 백업 DB에도 반영 (idempotent)
@@ -567,6 +571,29 @@ def del_tt_upload(name):
 
 def clear_tt_uploads():
     run("DELETE FROM tt_upload")
+
+# ── 점심값 정산 (팀 공유 · DB → GitHub 백업 동기화) ──
+def lunch_members():
+    return [x.strip() for x in get_state("lunch_members", "성기,윤호,연수").split(",") if x.strip()]
+
+def set_lunch_members(names):
+    set_state("lunch_members", ",".join(names))
+
+def get_lunch_week(monday_iso, people):
+    d0 = date.fromisoformat(monday_iso)
+    days = [(d0 + timedelta(days=i)).isoformat() for i in range(7)]
+    rows = q("SELECT person, ymd, amount FROM lunch WHERE ymd BETWEEN ? AND ?", (days[0], days[6]))
+    m = {(p, y): a for p, y, a in rows}
+    return days, {p: [int(m.get((p, dy), 0)) for dy in days] for p in people}
+
+def save_lunch(person, ymd, amount):
+    run("INSERT INTO lunch(person,ymd,amount) VALUES(?,?,?) "
+        "ON CONFLICT(person,ymd) DO UPDATE SET amount=excluded.amount",
+        (person, ymd, int(amount)))
+
+def lunch_month_totals(ym):  # 'YYYY-MM' → {day(int): 합계}
+    rows = q("SELECT ymd, SUM(amount) FROM lunch WHERE ymd LIKE ? GROUP BY ymd", (ym + "-%",))
+    return {int(y[8:10]): int(t or 0) for y, t in rows}
 
 def get_team_members():
     try:
@@ -1239,8 +1266,113 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표"]
+    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
+
+# ── 점심값 정산 ──────────────────────────────────────────────
+if page == "🍚 점심값 정산":
+    st.markdown("#### 🍚 점심값 정산")
+    people = lunch_members()
+    with st.expander("👥 인원 · 정산 방식"):
+        _nm = st.text_input("이름 (쉼표로 구분)", ", ".join(people), key="lunch_nm")
+        if st.button("이름 저장", key="lunch_nm_save"):
+            set_lunch_members([x.strip() for x in _nm.split(",") if x.strip()]); st.rerun()
+    split_mode = st.radio("정산 방식", ["n빵 (총액 ÷ 인원)", "각자 자기 것만"], horizontal=True, key="lunch_mode")
+
+    if "lunch_wk" not in ss:
+        ss.lunch_wk = (today - timedelta(days=today.weekday())).isoformat()
+    b1, b2, b3 = st.columns([1, 2.4, 1])
+    if b1.button("◀ 지난주", key="lw_prev"):
+        ss.lunch_wk = (date.fromisoformat(ss.lunch_wk) - timedelta(days=7)).isoformat(); st.rerun()
+    if b3.button("다음주 ▶", key="lw_next"):
+        ss.lunch_wk = (date.fromisoformat(ss.lunch_wk) + timedelta(days=7)).isoformat(); st.rerun()
+    mon = date.fromisoformat(ss.lunch_wk)
+    sun = mon + timedelta(days=6)
+    b2.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px'>"
+                f"{mon.month}/{mon.day}(월) ~ {sun.month}/{sun.day}(일)</div>", unsafe_allow_html=True)
+    if b2.button("이번 주로", key="lw_this", use_container_width=True):
+        ss.lunch_wk = (today - timedelta(days=today.weekday())).isoformat(); st.rerun()
+
+    DOW = ["월", "화", "수", "목", "금", "토", "일"]
+    days, data = get_lunch_week(ss.lunch_wk, people)
+
+    with st.form("lunch_form"):
+        st.caption("각 칸에 그 사람이 그날 낸 점심값(원)을 입력하고 저장하세요. 안 낸 날은 0.")
+        new = {}
+        for p in people:
+            st.markdown(f"**{p}**")
+            cols = st.columns(7)
+            new[p] = [c.number_input(f"{dn} {int(dy[8:10])}", min_value=0, step=500,
+                                     value=int(data[p][i]), key=f"ln_{p}_{dy}")
+                      for i, (c, dn, dy) in enumerate(zip(cols, DOW, days))]
+        if st.form_submit_button("💾 저장", use_container_width=True):
+            for p in people:
+                for dy, v in zip(days, new[p]):
+                    save_lunch(p, dy, v)
+            st.success("저장됨"); st.rerun()
+
+    totals = {p: sum(data[p]) for p in people}
+    grand = sum(totals.values())
+    n = max(len(people), 1)
+    share = grand // n
+
+    st.markdown("##### 주간 정산")
+    tcols = st.columns(len(people) + 1)
+    for i, p in enumerate(people):
+        tcols[i].metric(p, f"{totals[p]:,}원")
+    tcols[-1].metric("총액", f"{grand:,}원")
+
+    def _wonrow(vals):
+        return "/".join(f"{v:,}원" for v in vals)
+
+    lines = [f"[점심값 정산] {mon.month}/{mon.day}~{sun.month}/{sun.day}", ""]
+    for p in people:
+        lines += [p, " ".join(DOW), _wonrow(data[p]), f"주 합계: {totals[p]:,}원", ""]
+    lines.append("─" * 18)
+    lines.append(f"총액: {' + '.join(f'{totals[p]:,}' for p in people)} = {grand:,}원")
+    if split_mode.startswith("n빵"):
+        lines.append(f"1인당(÷{n}): {share:,}원")
+        lines.append("")
+        for p in people:
+            bal = totals[p] - share
+            if bal > 0:
+                lines.append(f"{p}: {totals[p]:,} 냄 → {bal:,}원 받을 돈(+)")
+            elif bal < 0:
+                lines.append(f"{p}: {totals[p]:,} 냄 → {-bal:,}원 낼 돈(-)")
+            else:
+                lines.append(f"{p}: {totals[p]:,} 냄 → 정산 완료")
+        payers = [p for p in people if totals[p] - share > 0]
+        if payers:
+            lines.append("")
+            lines.append(f"입금받을 사람: {', '.join(payers)}")
+    else:
+        lines.append("")
+        lines.append("각자 자기 주 합계만큼 입금:")
+        for p in people:
+            lines.append(f"{p}: {totals[p]:,}원")
+        lines.append(f"→ 총 입금액: {grand:,}원")
+    report = "\n".join(lines)
+    st.markdown("##### 복사용 (아래 우측 복사 버튼)")
+    st.code(report, language=None)
+
+    # 달력 뷰 (이번 주가 속한 달, 일자별 총액)
+    with st.expander(f"📅 {mon.year}년 {mon.month}월 달력 (일자별 점심값 총액)", expanded=False):
+        mt = lunch_month_totals(f"{mon.year:04d}-{mon.month:02d}")
+        head = "".join(f"<th style='padding:4px;font-size:11px;color:var(--color-muted)'>{d}</th>" for d in DOW)
+        cells = ""
+        for wk in cal_lib.monthcalendar(mon.year, mon.month):
+            cells += "<tr>"
+            for dd in wk:
+                if dd == 0:
+                    cells += "<td style='border:1px solid var(--color-border);height:52px'></td>"
+                else:
+                    amt = mt.get(dd, 0)
+                    cells += (f"<td style='border:1px solid var(--color-border);height:52px;padding:4px;vertical-align:top;font-size:11px'>"
+                              f"<b>{dd}</b>" + (f"<div style='color:var(--color-primary);font-weight:600;margin-top:3px'>{amt:,}</div>" if amt else "") + "</td>")
+            cells += "</tr>"
+        st.markdown(f"<table style='border-collapse:collapse;width:100%;table-layout:fixed'><tr>{head}</tr>{cells}</table>",
+                    unsafe_allow_html=True)
+    st.stop()
 
 # 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
 # 상태는 안 섞이므로, DB에 저장한 업로드분(tt_upload)을 preload로 4곳 모두에 주입해 같은 시간표를 쓴다.
