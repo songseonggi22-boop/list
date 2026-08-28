@@ -1,8 +1,26 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io, hashlib
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
+
+@st.cache_data
+def _tt_tool_html():
+    with open(TT_TOOL, encoding="utf-8") as f:
+        return f.read()
+
+def render_timetable_tool(hash_tab=""):
+    """클로드놀이_배포판 개강안내.html 을 그대로 embed. hash_tab: '' | 'assign' | 'announce' | 'consult'."""
+    html = _tt_tool_html()
+    if hash_tab:
+        html = html.replace(
+            "</body>",
+            f"<script>location.hash='#{hash_tab}';"
+            "if(typeof applyHashTab==='function')applyHashTab();</script></body>", 1)
+    components.html(html, height=1500, scrolling=True)
 
 DB = "salesdb.db"
 TT_DIR = "인트라넷 시간표"
@@ -681,7 +699,7 @@ def gen_text(type_, **k):
 
 # ── 페이지 설정 ───────────────────────────────────────────────
 st.set_page_config(page_title="업무 대시보드", page_icon="📊",
-                   layout="wide", initial_sidebar_state="collapsed")
+                   layout="wide", initial_sidebar_state="expanded")
 
 ss = st.session_state
 if "assign_out" not in ss: ss.assign_out = ""
@@ -811,7 +829,7 @@ div[data-testid="stHorizontalBlock"]>div[data-testid="stColumn"]:last-of-type .d
           border-radius:0 0 var(--radius-sm) var(--radius-sm);overflow:hidden}
 .cal-head{background:var(--color-panel);padding:8px 4px;text-align:center;font-weight:500;
           font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;border-right:1px solid var(--color-border);border-bottom:1px solid var(--color-border);color:var(--color-muted)}
-.cal-day{min-height:82px;padding:6px;border-right:1px solid var(--color-border);
+.cal-day{min-height:118px;padding:8px;border-right:1px solid var(--color-border);
          border-bottom:1px solid var(--color-border);background:var(--color-surface);vertical-align:top}
 .cal-day.td{background:var(--color-selected)}
 .cal-num{font-size:12px;font-weight:500;margin-bottom:3px;display:inline-block;
@@ -831,7 +849,37 @@ div[data-testid="stHorizontalBlock"]>div[data-testid="stColumn"]:last-of-type .d
 .t-date{font-size:11px;color:var(--color-text-secondary);margin-bottom:4px}
 .t-title{font-size:13px;font-weight:500;line-height:1.45;color:var(--color-text)}
 .t-title.done{text-decoration:line-through;color:var(--color-muted)}
+
+/* ── 좌측 사이드바 nav (클로드놀이_배포판 앱셸 톤) ── */
+section[data-testid="stSidebar"]{background:var(--color-panel);border-right:1px solid var(--color-border);width:236px!important;min-width:236px!important}
+section[data-testid="stSidebar"] .block-container{padding:1.4rem 1rem 2rem!important}
+section[data-testid="stSidebar"] [role="radiogroup"]{gap:2px!important}
+section[data-testid="stSidebar"] [role="radiogroup"] label{
+  padding:8px 10px!important;border-radius:var(--radius-sm)!important;margin:0!important;
+  font-size:13px!important;font-weight:500!important;color:var(--color-text-secondary)!important;
+  transition:background var(--ease),color var(--ease)!important;cursor:pointer!important}
+section[data-testid="stSidebar"] [role="radiogroup"] label:hover{background:var(--color-sidebar-active)!important;color:var(--color-text)!important}
+section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:var(--color-sidebar-active)!important;color:var(--color-primary)!important;font-weight:600!important}
+section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"]>div:first-child{transform:scale(.72);opacity:.55}  /* 라디오 점 작게 */
+.sb-brand{font-size:15px;font-weight:700;color:var(--color-text);padding:2px 6px 2px}
+.sb-brand-sub{font-size:10.5px;color:var(--color-muted);padding:0 6px 14px}
+.sb-sec{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--color-muted);margin:16px 6px 4px}
 </style>""", unsafe_allow_html=True)
+
+# ── 좌측 사이드바 nav (클로드놀이_배포판 index.html 앱셸) ──────────
+with st.sidebar:
+    st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
+                '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
+    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표"]
+    page = st.radio("메뉴", PAGES, label_visibility="collapsed")
+
+# 시간표 도구 4개 메뉴 → 개강안내.html embed (홈이 아니면 여기서 렌더 후 종료)
+_TT_HASH = {"📅 강의시간표": "", "🎯 강의배정": "assign", "📄 개강안내문": "announce", "🗓️ 상담시간표": "consult"}
+if page in _TT_HASH:
+    st.markdown(f"#### {page.split(' ',1)[1]}")
+    render_timetable_tool(_TT_HASH[page])
+    st.caption("클로드놀이_배포판 개강안내 도구를 그대로 불러온 화면입니다. 엑셀 업로드·셀 클릭·복사·PNG 저장 모두 이 안에서 동작합니다.")
+    st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
 st.iframe("""
@@ -858,10 +906,11 @@ setInterval(updateClock, 1000);
 </body></html>
 """, height=70)
 
-# ── 메인 2컬럼 (캘린더=1차 크게 / 우측 패널=2차) ───────────────────
-left, right = st.columns([1.4, 1], gap="medium")
+# ── 홈: 캘린더는 전체 폭으로 크게(1차), 상담·투두는 그 아래(2차) ──────
+left = st.container()
+right = st.container()
 
-# ── LEFT: 달력 ───────────────────────────────────────────────
+# ── 달력 (전체 폭) ───────────────────────────────────────────────
 with left:
     ci_cls = ["ci1","ci2","ci3"]
     day_clr = [None,None,None,None,None,"#5C7A94","#C68A7A"]
