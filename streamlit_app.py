@@ -35,7 +35,9 @@ def render_timetable_tool(hash_tab="", preload=None):
         inject += (f"<script>location.hash='#{hash_tab}';"
                    "if(typeof applyHashTab==='function')applyHashTab();</script>")
     if inject:
-        html = html.replace("</body>", inject + "</body>", 1)
+        # ※ '</body>'·'</html>' 둘 다 도구 JS의 인쇄/PNG 템플릿 문자열 안에도 있어서 replace 대상이 아님.
+        #    문서 맨 끝에 그냥 덧붙인다 — 닫는 태그 뒤 <script>도 파서가 body로 옮겨 정상 실행됨.
+        html = html + inject
     components.html(html, height=1500, scrolling=True)
 
 DB = "salesdb.db"
@@ -958,7 +960,27 @@ if page == "📅 시간표":
                 clear_tt_uploads(); st.rerun()
         else:
             st.info("아직 업로드된 시간표 없음 — 지금은 저장소의 `인트라넷 시간표/` 폴더 파일을 기본으로 씁니다.")
-    st.caption("맨 위 탭으로 네 화면을 오갑니다. 위에서 올린 시간표는 아래 도구에도 자동 반영됩니다(재업로드 불필요). 셀 클릭·복사·PNG 저장 전부 이 안에서 동작.")
+    st.caption("아래 도구의 **맨 위 탭**(파일 업로드 / 시간표 / 강의배정 / 개강안내문 / 상담시간표)으로 화면을 오갑니다. "
+               "시간표를 새로 만들려면 도구의 **'파일 업로드' 탭 → 년월 선택 → 평일/주말 → ▶ 시간표 생성**. "
+               "위 업로드 칸에 올린 파일은 자동 반영됩니다(재업로드 불필요).")
+    # 임베드 iframe에서 PNG 저장·복사가 막힐 때 대비: 전체 화면 새 탭 링크 (같은 도구, 업로드 파일 주입)
+    import base64 as _b64m
+    _tool_full = _tt_tool_html()
+    if _ups:
+        _files_js = json.dumps([{"name": n, "b64": b} for n, b in _ups], ensure_ascii=False)
+        _tool_full += ("<script>window.addEventListener('load',function(){setTimeout(async function(){try{"
+                       f"var FS={_files_js};if(typeof loadFileAuto!=='function')return;"
+                       "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
+                       "for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);await loadFileAuto(new File([a],FS[i].name));}"
+                       "if(typeof saveToStorage==='function')saveToStorage();"
+                       "if(typeof updateMonthFilters==='function')updateMonthFilters();"
+                       "if(typeof renderCurrent==='function')renderCurrent();"
+                       "}catch(e){console.warn(e);}},300);});</script>")
+    _data_uri = "data:text/html;base64," + _b64m.b64encode(_tool_full.encode("utf-8")).decode()
+    st.markdown(f"<a href='{_data_uri}' target='_blank' rel='noopener' "
+                "style='display:inline-block;margin:4px 0 10px;font-size:12px;font-weight:600;color:var(--color-primary);"
+                "border:1px solid var(--color-border);border-radius:8px;padding:6px 12px;text-decoration:none'>"
+                "🔗 전체 화면 새 탭에서 열기 (PNG 저장·복사가 안 될 때)</a>", unsafe_allow_html=True)
     render_timetable_tool("", preload=_ups or None)
     st.stop()
 
