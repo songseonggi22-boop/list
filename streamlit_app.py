@@ -739,80 +739,107 @@ for c in consults:
         d = int(c["sched_date"][8:])
         cmap.setdefault(d, []).append(c)
 
-# ── CSS (사용자 HTML 기반) ─────────────────────────────────────
+# ── CSS (디자인 시스템: 클로드놀이_배포판 블루 톤 이식 · Phase 1) ──────────────
+# 기준: AI 위키 wiki/design/업무대시보드-디자인시스템.md
 st.markdown("""<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
 #MainMenu,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important}
-.block-container{padding:.8rem 1.8rem 2rem!important;max-width:100%!important}
-[data-testid="stAppViewContainer"],.main{background:#f8f9fa!important}
+.block-container{padding:.7rem 1.8rem 2.5rem!important;max-width:100%!important}
+[data-testid="stAppViewContainer"],.main{background:var(--color-bg)!important}
 
 :root{
-  --bg:#f8f9fa;--card:#fff;--tx:#333;--sub:#666;--bd:#eaeaea;
-  --p1:#fff0f0;--p1t:#ff5b5b;
-  --p2:#fff5e6;--p2t:#ff9f43;
-  --p3:#f0f7ff;--p3t:#2f80ed;
+  /* 색상 토큰 (블루 톤) */
+  --color-bg:#F5F7F9; --color-panel:#FFFFFF; --color-surface:#FFFFFF; --color-border:#E7EBEF;
+  --color-primary:#5C7A94; --color-primary-hover:#6D8AA3; --color-selected:#F1F4F6; --color-sidebar-active:#F1F4F6;
+  --color-text:#333D46; --color-text-secondary:#707F8D; --color-muted:#9FACB7;
+  --color-success:#8DA57A; --color-warning:#C79A68; --color-danger:#C68A7A; --color-urgent:#DD5C33;
+  --color-written-bg:#EFEFF0; --color-written-text:#6B6F76; --color-practical-text:#5C7A94;
+  /* 간격 / 반경 / 전이 스케일 */
+  --space-1:4px;--space-2:6px;--space-3:8px;--space-4:10px;--space-5:12px;
+  --space-6:16px;--space-7:20px;--space-8:24px;--space-9:32px;--space-10:40px;
+  --radius-sm:8px;--radius-md:10px;--radius-lg:12px;--radius-pill:999px;
+  --ease:.2s ease;
+  /* 기존 클래스 호환 별칭 (점진 이식용) */
+  --bg:var(--color-bg); --card:var(--color-surface); --tx:var(--color-text);
+  --sub:var(--color-text-secondary); --bd:var(--color-border);
+  --p1:#FDECEC; --p1t:#B5786A;   /* 담당자1 / 급함 계열 */
+  --p2:#FAF2E6; --p2t:#B08A5A;   /* 경고 계열 */
+  --p3:#EDF2F6; --p3t:#5C7A94;   /* primary 계열 */
 }
-*{font-family:'Noto Sans KR',sans-serif}
+*{font-family:'Pretendard','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif}
+body{color:var(--color-text)}
 
-/* Streamlit 버튼 */
+@keyframes fadeInUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* Streamlit 버튼 — 기본은 아웃라인, type="primary"는 슬레이트 채움 */
 [data-testid="stButton"]>button{
-  padding:3px 10px!important;font-size:11px!important;border-radius:5px!important;
+  padding:4px 12px!important;font-size:11.5px!important;border-radius:var(--radius-sm)!important;
   font-weight:500!important;min-height:0!important;line-height:1.5!important;
-  border:1px solid var(--bd)!important;background:transparent!important;color:var(--sub)!important}
-[data-testid="stButton"]>button:hover{background:#f0f0f0!important}
-[data-testid="stCheckbox"] label{font-size:11px!important;color:var(--sub)!important}
-[data-testid="stCheckbox"]>label>div:first-child{width:13px!important;height:13px!important;border-radius:3px!important}
+  border:1px solid var(--color-border)!important;background:var(--color-surface)!important;color:var(--color-text-secondary)!important;
+  transition:background var(--ease),color var(--ease),border-color var(--ease)!important}
+[data-testid="stButton"]>button:hover{background:var(--color-sidebar-active)!important;color:var(--color-text)!important;border-color:var(--color-primary)!important}
+[data-testid="stButton"]>button[kind="primary"]{
+  background:var(--color-primary)!important;border-color:var(--color-primary)!important;color:#fff!important}
+[data-testid="stButton"]>button[kind="primary"]:hover{background:var(--color-primary-hover)!important;border-color:var(--color-primary-hover)!important}
+[data-testid="stCheckbox"] label{font-size:11.5px!important;color:var(--color-text-secondary)!important}
+[data-testid="stCheckbox"]>label>div:first-child{width:13px!important;height:13px!important;border-radius:4px!important}
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] [data-checked="true"]{background:var(--color-primary)!important;border-color:var(--color-primary)!important}
 [data-testid="stForm"]{border:none!important;padding:0!important}
-.stTextInput input,.stSelectbox>div>div,.stDateInput input,.stNumberInput input{
-  border-radius:7px!important;border:1.5px solid var(--bd)!important;font-size:12px!important;background:#fff!important}
-[data-testid="stExpander"]{border:1.5px solid var(--bd)!important;border-radius:10px!important;background:#fff!important}
+.stTextInput input,.stSelectbox>div>div,.stDateInput input,.stNumberInput input,.stTextArea textarea{
+  border-radius:var(--radius-md)!important;border:1.5px solid var(--color-border)!important;font-size:12px!important;background:var(--color-surface)!important;transition:border-color var(--ease)!important}
+.stTextInput input:focus,.stDateInput input:focus,.stNumberInput input:focus,.stTextArea textarea:focus{border-color:var(--color-primary)!important;outline:none!important}
+[data-testid="stExpander"]{border:1.5px solid var(--color-border)!important;border-radius:var(--radius-lg)!important;background:var(--color-surface)!important}
+[data-testid="stTabs"] button[aria-selected="true"]{color:var(--color-primary)!important}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{background:var(--color-primary)!important}
 div[data-testid="stHorizontalBlock"]{gap:.8rem!important}
-hr{margin:.3rem 0!important;border-color:#f0f0f0!important}
+hr{margin:.3rem 0!important;border-color:var(--color-border)!important}
+::selection{background:var(--color-selected)}
 
 /* 공통 카드 */
-.db-card{background:var(--card);border-radius:16px;padding:22px;
-         box-shadow:0 4px 12px rgba(0,0,0,0.03);border:1px solid var(--bd)}
-.db-card-title{font-size:16px;font-weight:700;color:var(--tx);
-               display:flex;align-items:center;gap:7px;margin-bottom:16px}
+.db-card{background:var(--color-surface);border-radius:var(--radius-lg);padding:var(--space-8);
+         box-shadow:0 1px 2px rgba(20,40,60,.04),0 8px 24px rgba(20,40,60,.05);border:1px solid var(--color-border);animation:fadeInUp .35s ease both}
+.db-card-title{font-size:15px;font-weight:600;color:var(--color-text);
+               display:flex;align-items:center;gap:7px;margin-bottom:var(--space-6)}
 
-/* 달력 */
+/* 달력 (1차 정보 — 크게, 대비 높게) */
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);
-          border-top:1px solid var(--bd);border-left:1px solid var(--bd);
-          border-radius:0 0 8px 8px;overflow:hidden}
-.cal-head{background:#fdfdfd;padding:8px 4px;text-align:center;font-weight:700;
-          font-size:12px;border-right:1px solid var(--bd);border-bottom:1px solid var(--bd);color:var(--sub)}
-.cal-day{min-height:82px;padding:6px;border-right:1px solid var(--bd);
-         border-bottom:1px solid var(--bd);background:#fff;vertical-align:top}
-.cal-day.td{background:#f5f3ff}
+          border-top:1px solid var(--color-border);border-left:1px solid var(--color-border);
+          border-radius:0 0 var(--radius-sm) var(--radius-sm);overflow:hidden}
+.cal-head{background:var(--color-panel);padding:8px 4px;text-align:center;font-weight:500;
+          font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;border-right:1px solid var(--color-border);border-bottom:1px solid var(--color-border);color:var(--color-muted)}
+.cal-day{min-height:82px;padding:6px;border-right:1px solid var(--color-border);
+         border-bottom:1px solid var(--color-border);background:var(--color-surface);vertical-align:top}
+.cal-day.td{background:var(--color-selected)}
 .cal-num{font-size:12px;font-weight:500;margin-bottom:3px;display:inline-block;
          width:21px;height:21px;line-height:21px;text-align:center;border-radius:50%}
-.cal-num.td{background:#4f46e5;color:#fff!important}
+.cal-num.td{background:var(--color-primary);color:#fff!important;font-weight:600}
 .ci{font-size:9px;padding:2px 5px;border-radius:4px;margin-bottom:2px;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;display:block}
 .ci1{background:var(--p1);color:var(--p1t)}.ci2{background:var(--p2);color:var(--p2t)}.ci3{background:var(--p3);color:var(--p3t)}
 
-/* 칸반 */
-.k-head{font-size:12px;font-weight:700;padding:5px 11px;border-radius:6px;display:inline-block;margin-bottom:10px}
+/* 칸반 (2차 정보) */
+.k-head{font-size:12px;font-weight:600;padding:5px 11px;border-radius:var(--radius-sm);display:inline-block;margin-bottom:10px}
 .kp1{background:var(--p1);color:var(--p1t)}.kp2{background:var(--p2);color:var(--p2t)}.kp3{background:var(--p3);color:var(--p3t)}
-.t-card{background:#fff;border:1px solid var(--bd);border-radius:10px;
-        padding:12px;margin-bottom:4px;box-shadow:0 2px 6px rgba(0,0,0,0.02);
-        transition:transform .15s}
-.t-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.05)}
-.t-date{font-size:11px;color:var(--sub);margin-bottom:4px}
-.t-title{font-size:13px;font-weight:500;line-height:1.45;color:var(--tx)}
-.t-title.done{text-decoration:line-through;color:#bbb}
+.t-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-md);
+        padding:12px;margin-bottom:4px;box-shadow:0 1px 2px rgba(20,40,60,.04);
+        transition:transform .15s var(--ease),box-shadow .15s var(--ease)}
+.t-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(20,40,60,.08)}
+.t-date{font-size:11px;color:var(--color-text-secondary);margin-bottom:4px}
+.t-title{font-size:13px;font-weight:500;line-height:1.45;color:var(--color-text)}
+.t-title.done{text-decoration:line-through;color:var(--color-muted)}
 </style>""", unsafe_allow_html=True)
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
 st.iframe("""
-<html><body style="margin:0;background:#f8f9fa">
-<div style="font-family:'Noto Sans KR',sans-serif;display:flex;justify-content:space-between;
-            align-items:center;padding:4px 2px 14px 2px;border-bottom:2px solid #eaeaea">
-  <h1 style="font-size:22px;font-weight:700;color:#333;margin:0">
-    <span style="color:#4f46e5">■</span> 업무 및 일정 관리 대시보드
+<html><body style="margin:0;background:#F5F7F9">
+<div style="font-family:'Pretendard','Noto Sans KR',sans-serif;display:flex;justify-content:space-between;
+            align-items:center;padding:4px 2px 14px 2px;border-bottom:2px solid #E7EBEF">
+  <h1 style="font-size:22px;font-weight:600;color:#333D46;margin:0">
+    <span style="color:#5C7A94">■</span> 업무 및 일정 관리 대시보드
   </h1>
-  <div id="live-clock" style="font-size:13px;color:#666"></div>
+  <div id="live-clock" style="font-size:13px;color:#707F8D"></div>
 </div>
 <script>
 function updateClock() {
@@ -922,7 +949,7 @@ with right:
         dd  = datetime.strptime(d, "%Y-%m-%d")
         wtag = ["월","화","수","목","금","토","일"][dd.weekday()]
         label = f"{dd.month}월 {dd.day}일 ({wtag}){' · 오늘' if d == today_str else ''}"
-        clr = "#4f46e5" if d == today_str else "#999"
+        clr = "#5C7A94" if d == today_str else "#999"
         st.markdown(f"<div style='font-size:11px;font-weight:700;color:{clr};margin:6px 0 4px'>{label}</div>",
                     unsafe_allow_html=True)
         for c in by_date[d]:
@@ -952,11 +979,11 @@ with right:
                 cc1, cc2, cc3, cc4 = st.columns([1, 0.13, 0.13, 0.13])
                 dim = "opacity:0.5;text-decoration:line-through" if c["finalized"] else ""
                 cc1.markdown(f"""
-<div style='background:#eef2ff;border-left:3px solid #4f46e5;border-radius:6px;
+<div style='background:#EDF2F6;border-left:3px solid #5C7A94;border-radius:6px;
             padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center;{dim}'>
   <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']} <span style='font-weight:500;color:#8b8bd8'>({c['ctype']})</span></span>
-  <span style='font-size:11px;color:#6366f1'>{c['sched_time']}</span>
-  <span style='font-size:11px;font-weight:700;color:#4f46e5'>{c['expected_revenue']:,}원</span>
+  <span style='font-size:11px;color:#6D8AA3'>{c['sched_time']}</span>
+  <span style='font-size:11px;font-weight:700;color:#5C7A94'>{c['expected_revenue']:,}원</span>
 </div>""", unsafe_allow_html=True)
                 if cc2.button("✏️", key=f"ec{c['id']}"):
                     st.session_state["edit_consult_id"] = c["id"]
@@ -1130,7 +1157,7 @@ with st.expander("🔍 강의장×시간 그리드에서 강좌 선택 (신규 �
                     head_cols = st.columns(len(row_rooms))
                     for col, room in zip(head_cols, row_rooms):
                         col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
-                                    background:#eef2ff;color:#4f46e5;border-radius:6px;padding:4px;margin-bottom:4px'>
+                                    background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
                                     {room}</div>""", unsafe_allow_html=True)
                     for t in times:
                         if not any((room, t) in by_cell for room in row_rooms):
@@ -1296,7 +1323,7 @@ def _course_picker(label, key):
                 head = st.columns(len(row_rooms))
                 for col, room in zip(head, row_rooms):
                     col.markdown(f"""<div style='font-size:11px;font-weight:700;text-align:center;
-                                background:#eef2ff;color:#4f46e5;border-radius:6px;padding:4px;margin-bottom:4px'>
+                                background:#EDF2F6;color:#5C7A94;border-radius:6px;padding:4px;margin-bottom:4px'>
                                 {room}</div>""", unsafe_allow_html=True)
                 for t in times:
                     if not any((room, t) in by_cell for room in row_rooms):
