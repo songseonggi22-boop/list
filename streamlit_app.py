@@ -802,6 +802,8 @@ hr{margin:.3rem 0!important;border-color:var(--color-border)!important}
          box-shadow:0 1px 2px rgba(20,40,60,.04),0 8px 24px rgba(20,40,60,.05);border:1px solid var(--color-border);animation:fadeInUp .35s ease both}
 .db-card-title{font-size:15px;font-weight:600;color:var(--color-text);
                display:flex;align-items:center;gap:7px;margin-bottom:var(--space-6)}
+/* 우측 컬럼 = 2차 정보: 카드 제목 톤 다운 (본문 최상위 2컬럼만) */
+div[data-testid="stHorizontalBlock"]>div[data-testid="stColumn"]:last-of-type .db-card-title{font-size:13.5px;font-weight:600;color:var(--color-text-secondary)}
 
 /* 달력 (1차 정보 — 크게, 대비 높게) */
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);
@@ -856,13 +858,13 @@ setInterval(updateClock, 1000);
 </body></html>
 """, height=70)
 
-# ── 메인 2컬럼 ────────────────────────────────────────────────
-left, right = st.columns([1.05, 1.35], gap="medium")
+# ── 메인 2컬럼 (캘린더=1차 크게 / 우측 패널=2차) ───────────────────
+left, right = st.columns([1.4, 1], gap="medium")
 
 # ── LEFT: 달력 ───────────────────────────────────────────────
 with left:
     ci_cls = ["ci1","ci2","ci3"]
-    day_clr = [None,None,None,None,None,"#2f80ed","#ff5b5b"]
+    day_clr = [None,None,None,None,None,"#5C7A94","#C68A7A"]
 
     def pill_html(c, cls):
         rev = f"{c['expected_revenue']//10000}만" if c["expected_revenue"] >= 10000 \
@@ -877,7 +879,7 @@ with left:
         rows_html += "<tr style='display:contents'>"
         for wi, day in enumerate(week):
             if day == 0:
-                rows_html += '<div class="cal-day" style="background:#fafafa"></div>'; continue
+                rows_html += '<div class="cal-day" style="background:#F1F4F6"></div>'; continue
             is_td   = day == today.day
             td_cls  = " td" if is_td else ""
             nc      = "td" if is_td else ""
@@ -904,8 +906,8 @@ with left:
     <div class="cal-head">월</div><div class="cal-head">화</div>
     <div class="cal-head">수</div><div class="cal-head">목</div>
     <div class="cal-head">금</div>
-    <div class="cal-head" style="color:#2f80ed">토</div>
-    <div class="cal-head" style="color:#ff5b5b">일</div>
+    <div class="cal-head" style="color:#5C7A94">토</div>
+    <div class="cal-head" style="color:#C68A7A">일</div>
     {rows_html}
   </div>
 </div>""", unsafe_allow_html=True)
@@ -981,7 +983,7 @@ with right:
                 cc1.markdown(f"""
 <div style='background:#EDF2F6;border-left:3px solid #5C7A94;border-radius:6px;
             padding:7px 12px;margin:3px 0;display:flex;justify-content:space-between;align-items:center;{dim}'>
-  <span style='font-size:12px;font-weight:700;color:#3730a3'>{c['name']} <span style='font-weight:500;color:#8b8bd8'>({c['ctype']})</span></span>
+  <span style='font-size:12px;font-weight:700;color:#333D46'>{c['name']} <span style='font-weight:500;color:#707F8D'>({c['ctype']})</span></span>
   <span style='font-size:11px;color:#6D8AA3'>{c['sched_time']}</span>
   <span style='font-size:11px;font-weight:700;color:#5C7A94'>{c['expected_revenue']:,}원</span>
 </div>""", unsafe_allow_html=True)
@@ -1065,8 +1067,8 @@ with right:
   <div style='display:flex;justify-content:space-between;font-size:11px;color:#666'>
     <span>진행률</span><span><b>{pct}%</b></span>
   </div>
-  <div style='background:#eee;border-radius:6px;height:8px;overflow:hidden'>
-    <div style='background:#2f80ed;height:100%;width:{pct}%'></div>
+  <div style='background:#EDF2F6;border-radius:6px;height:8px;overflow:hidden'>
+    <div style='background:#5C7A94;height:100%;width:{pct}%'></div>
   </div>
 </div>""", unsafe_allow_html=True)
                     new_pct = st.slider("진행률", 0, 100, pct, step=5,
