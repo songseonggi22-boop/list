@@ -12,33 +12,38 @@ def _tt_tool_html():
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
-def render_timetable_tool(hash_tab="", preload=None):
+def render_timetable_tool(hash_tab="timetable", preload=None, height=1500):
     """클로드놀이_배포판 개강안내.html 을 그대로 embed.
-    hash_tab: '' | 'assign' | 'announce' | 'consult'
-    preload: [(name, content_b64), ...] — 있으면 도구에 미리 주입(재업로드 불필요)."""
+    hash_tab: 'timetable' | 'assign' | 'announce' | 'consult' | 'upload'
+    preload: [(name, content_b64), ...] — 도구에 미리 주입(재업로드 불필요).
+    ※ 4개 메뉴가 각각 별도 iframe이라 상태가 안 섞임 → preload(DB 저장분)로 모두 같은 시간표를 받는다."""
     html = _tt_tool_html()
-    inject = ""
+    inject = "<script>(function(){\n"
     if preload:
         files_js = json.dumps([{"name": n, "b64": b} for n, b in preload], ensure_ascii=False)
         inject += (
-            "<script>window.addEventListener('load',function(){setTimeout(async function(){try{"
-            f"var FS={files_js};"
-            "if(typeof loadFileAuto!=='function')return;"
-            "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
-            "for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);"
-            "await loadFileAuto(new File([a],FS[i].name));}"
-            "if(typeof saveToStorage==='function')saveToStorage();"
-            "if(typeof updateMonthFilters==='function')updateMonthFilters();"
-            "if(typeof renderCurrent==='function')renderCurrent();"
-            "}catch(e){console.warn('시간표 preload 실패',e);}},300);});</script>")
-    if hash_tab:
-        inject += (f"<script>location.hash='#{hash_tab}';"
-                   "if(typeof applyHashTab==='function')applyHashTab();</script>")
-    if inject:
-        # ※ '</body>'·'</html>' 둘 다 도구 JS의 인쇄/PNG 템플릿 문자열 안에도 있어서 replace 대상이 아님.
-        #    문서 맨 끝에 그냥 덧붙인다 — 닫는 태그 뒤 <script>도 파서가 body로 옮겨 정상 실행됨.
-        html = html + inject
-    components.html(html, height=1500, scrolling=True)
+            "var FS=" + files_js + ";\n"
+            "async function _pre(){try{\n"
+            "  if(typeof loadFileAuto!=='function'){setTimeout(_pre,150);return;}\n"
+            "  for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);\n"
+            "    for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);\n"
+            "    await loadFileAuto(new File([a],FS[i].name));}\n"
+            "  if(typeof saveToStorage==='function')saveToStorage();\n"
+            "  if(typeof updateMonthFilters==='function')updateMonthFilters();\n"
+            "  if(typeof updateAllMonthFilters==='function')updateAllMonthFilters();\n"
+            "  location.hash='#" + hash_tab + "';\n"
+            "  if(typeof applyHashTab==='function')applyHashTab();\n"     # 데이터 채운 뒤 해당 탭 다시 렌더
+            "  else if(typeof switchTab==='function')switchTab('" + hash_tab + "');\n"
+            "}catch(e){console.warn('시간표 preload 실패',e);}}\n"
+            "if(document.readyState==='complete')_pre();else window.addEventListener('load',function(){setTimeout(_pre,200);});\n")
+    else:
+        inject += (
+            "function _go(){location.hash='#" + hash_tab + "';\n"
+            "  if(typeof applyHashTab==='function')applyHashTab();}\n"
+            "if(document.readyState==='complete')_go();else window.addEventListener('load',_go);\n")
+    inject += "})();</script>"
+    # ※ '</body>'·'</html>'는 도구 JS의 인쇄/PNG 템플릿 문자열 안에도 있어 replace 불가 → 문서 맨 끝에 덧붙임.
+    components.html(html + inject, height=height, scrolling=True)
 
 DB = "salesdb.db"
 TT_DIR = "인트라넷 시간표"
@@ -933,65 +938,69 @@ section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"]>div:
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📅 시간표"]
+    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
-# 시간표 = 개강안내.html 을 하나의 embed 로 (도구 자체 상단 탭: 시간표/강의배정/개강안내문/상담시간표).
-# ※ 메뉴를 4개로 쪼개면 각각 별도 iframe 이라 업로드한 엑셀이 공유 안 됨 → 한 embed 로 유지.
-if page == "📅 시간표":
-    st.markdown("#### 시간표 · 강의배정 · 개강안내문 · 상담시간표")
-    st.caption("**한 칸/여러 칸 선택 → 문서 만들기 → 인쇄**는 아래 도구의 탭에 있습니다 — "
-               "**개강안내문** 탭: 칸 하나 클릭 → 안내문(복사). "
-               "**상담시간표** 탭: 여러 칸 토글 선택 → 하단 막대의 만들기 버튼 → 미리보기에서 **인쇄 / PNG 저장**. "
-               "인쇄·PNG가 임베드 안에서 안 되면 아래 **‘전체 화면 새 탭에서 열기’** 링크로 여세요.")
+# 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
+# 상태는 안 섞이므로, DB에 저장한 업로드분(tt_upload)을 preload로 4곳 모두에 주입해 같은 시간표를 쓴다.
+_TT_MENU = {"📅 강의시간표": "timetable", "🎯 강의배정": "assign",
+            "📄 개강안내문": "announce", "🗓️ 상담시간표": "consult"}
+if page in _TT_MENU:
+    _hash = _TT_MENU[page]
     _ups = tt_uploads()
     _sample = os.path.join(os.path.dirname(__file__), "시간표도구", "data", "시간표.xls")
-    if not _ups and os.path.exists(_sample):
-        if st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
-            import base64 as _sb
-            with open(_sample, "rb") as _sf:
-                _ups = [("샘플_시간표.xls", _sb.b64encode(_sf.read()).decode())]
-    with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개 등록됨)", expanded=not _ups):
-        st.caption("여기 올린 시간표 하나가 **대시보드 전체(강의배정·개강안내문·상담시간표 + 홈의 배정/문자 기능)** 에 함께 쓰입니다. "
-                   "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB에 저장돼 팀원 모두에게 반영됩니다.")
+    if not _ups and os.path.exists(_sample) and st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
+        import base64 as _sb
+        with open(_sample, "rb") as _sf:
+            _ups = [("샘플_시간표.xls", _sb.b64encode(_sf.read()).decode())]
+
+    with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개)", expanded=not _ups):
+        st.caption("여기 올린 시간표 하나가 **4개 메뉴 전부 + 홈의 배정/문자 기능**에 함께 쓰입니다. "
+                   "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB 저장 → 팀원 모두 반영.")
         up = st.file_uploader("강의시간표 xls", type=["xls", "xlsx"], accept_multiple_files=True,
                               key="tt_up", label_visibility="collapsed")
         if up:
             for f in up:
                 save_tt_upload(f.name, f.getvalue())
             st.success(f"{len(up)}개 저장됨"); st.rerun()
-        if _ups:
-            for name, _b64 in _ups:
-                cx, cy = st.columns([1, 0.12])
-                cx.markdown(f"<div style='font-size:12px;padding:4px 0'>· {name}</div>", unsafe_allow_html=True)
-                if cy.button("✕", key=f"delu_{name}"):
-                    del_tt_upload(name); st.rerun()
-            if st.button("전체 삭제 (인트라넷 시간표/ 폴더 기본값으로 되돌림)"):
+        for name, _b64 in _ups:
+            cx, cy = st.columns([1, 0.12])
+            cx.markdown(f"<div style='font-size:12px;padding:4px 0'>· {name}</div>", unsafe_allow_html=True)
+            if name != "샘플_시간표.xls" and cy.button("✕", key=f"delu_{name}"):
+                del_tt_upload(name); st.rerun()
+        if _ups and any(n != "샘플_시간표.xls" for n, _ in _ups):
+            if st.button("전체 삭제 (인트라넷 시간표/ 폴더 기본값으로)"):
                 clear_tt_uploads(); st.rerun()
-        else:
-            st.info("아직 업로드된 시간표 없음 — 지금은 저장소의 `인트라넷 시간표/` 폴더 파일을 기본으로 씁니다.")
-    st.caption("아래 도구의 **맨 위 탭**(파일 업로드 / 시간표 / 강의배정 / 개강안내문 / 상담시간표)으로 화면을 오갑니다. "
-               "시간표를 새로 만들려면 도구의 **'파일 업로드' 탭 → 년월 선택 → 평일/주말 → ▶ 시간표 생성**. "
-               "위 업로드 칸에 올린 파일은 자동 반영됩니다(재업로드 불필요).")
-    # 임베드 iframe에서 PNG 저장·복사가 막힐 때 대비: 전체 화면 새 탭 링크 (같은 도구, 업로드 파일 주입)
+        elif not _ups:
+            st.info("업로드 없음 — 저장소 `인트라넷 시간표/` 폴더 파일을 기본으로 씁니다.")
+
+    _tips = {
+        "timetable": "월/평일·주말 필터로 강의를 봅니다. 강의를 선택해 문서를 만들려면 **강의배정 / 개강안내문 / 상담시간표** 메뉴로 가세요.",
+        "assign": "강의를 여러 개 골라 → 하단 막대 **배정 진행**.",
+        "announce": "강의 하나 클릭 → 개강안내문(복사). 여러 개 골라 하단 막대 **개강안내문 생성**도 가능.",
+        "consult": "강의를 **여러 칸 토글 선택** → 화면 하단 막대 **시간표 생성** → 미리보기에서 **인쇄 / PNG 저장**.",
+    }
+    st.caption(_tips[_hash] + " 인쇄·PNG가 이 화면에서 막히면 아래 **‘전체 화면 새 탭’** 링크로 여세요.")
+
+    # 전체 화면 새 탭 링크 (같은 도구 + 업로드 파일 주입) — iframe sandbox에서 인쇄/PNG 막힐 때
     import base64 as _b64m
-    _tool_full = _tt_tool_html()
+    _full = _tt_tool_html()
     if _ups:
-        _files_js = json.dumps([{"name": n, "b64": b} for n, b in _ups], ensure_ascii=False)
-        _tool_full += ("<script>window.addEventListener('load',function(){setTimeout(async function(){try{"
-                       f"var FS={_files_js};if(typeof loadFileAuto!=='function')return;"
-                       "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
-                       "for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);await loadFileAuto(new File([a],FS[i].name));}"
-                       "if(typeof saveToStorage==='function')saveToStorage();"
-                       "if(typeof updateMonthFilters==='function')updateMonthFilters();"
-                       "if(typeof renderCurrent==='function')renderCurrent();"
-                       "}catch(e){console.warn(e);}},300);});</script>")
-    _data_uri = "data:text/html;base64," + _b64m.b64encode(_tool_full.encode("utf-8")).decode()
-    st.markdown(f"<a href='{_data_uri}' target='_blank' rel='noopener' "
-                "style='display:inline-block;margin:4px 0 10px;font-size:12px;font-weight:600;color:var(--color-primary);"
+        _fjs = json.dumps([{"name": n, "b64": b} for n, b in _ups], ensure_ascii=False)
+        _full += ("<script>(function(){var FS=" + _fjs + ";async function p(){try{"
+                  "if(typeof loadFileAuto!=='function'){setTimeout(p,150);return;}"
+                  "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
+                  "for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);await loadFileAuto(new File([a],FS[i].name));}"
+                  "if(typeof saveToStorage==='function')saveToStorage();"
+                  "location.hash='#" + _hash + "';if(typeof applyHashTab==='function')applyHashTab();"
+                  "}catch(e){console.warn(e);}}if(document.readyState==='complete')p();else addEventListener('load',function(){setTimeout(p,200);});})();</script>")
+    _uri = "data:text/html;base64," + _b64m.b64encode(_full.encode("utf-8")).decode()
+    st.markdown(f"<a href='{_uri}' target='_blank' rel='noopener' "
+                "style='display:inline-block;margin:2px 0 8px;font-size:12px;font-weight:600;color:var(--color-primary);"
                 "border:1px solid var(--color-border);border-radius:8px;padding:6px 12px;text-decoration:none'>"
-                "🔗 전체 화면 새 탭에서 열기 (PNG 저장·복사가 안 될 때)</a>", unsafe_allow_html=True)
-    render_timetable_tool("", preload=_ups or None)
+                "🔗 전체 화면 새 탭에서 열기</a>", unsafe_allow_html=True)
+
+    render_timetable_tool(_hash, preload=_ups or None)
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
