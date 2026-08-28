@@ -12,14 +12,30 @@ def _tt_tool_html():
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
-def render_timetable_tool(hash_tab=""):
-    """클로드놀이_배포판 개강안내.html 을 그대로 embed. hash_tab: '' | 'assign' | 'announce' | 'consult'."""
+def render_timetable_tool(hash_tab="", preload=None):
+    """클로드놀이_배포판 개강안내.html 을 그대로 embed.
+    hash_tab: '' | 'assign' | 'announce' | 'consult'
+    preload: [(name, content_b64), ...] — 있으면 도구에 미리 주입(재업로드 불필요)."""
     html = _tt_tool_html()
+    inject = ""
+    if preload:
+        files_js = json.dumps([{"name": n, "b64": b} for n, b in preload], ensure_ascii=False)
+        inject += (
+            "<script>window.addEventListener('load',function(){setTimeout(async function(){try{"
+            f"var FS={files_js};"
+            "if(typeof loadFileAuto!=='function')return;"
+            "for(var i=0;i<FS.length;i++){var b=atob(FS[i].b64),a=new Uint8Array(b.length);"
+            "for(var k=0;k<b.length;k++)a[k]=b.charCodeAt(k);"
+            "await loadFileAuto(new File([a],FS[i].name));}"
+            "if(typeof saveToStorage==='function')saveToStorage();"
+            "if(typeof updateMonthFilters==='function')updateMonthFilters();"
+            "if(typeof renderCurrent==='function')renderCurrent();"
+            "}catch(e){console.warn('시간표 preload 실패',e);}},300);});</script>")
     if hash_tab:
-        html = html.replace(
-            "</body>",
-            f"<script>location.hash='#{hash_tab}';"
-            "if(typeof applyHashTab==='function')applyHashTab();</script></body>", 1)
+        inject += (f"<script>location.hash='#{hash_tab}';"
+                   "if(typeof applyHashTab==='function')applyHashTab();</script>")
+    if inject:
+        html = html.replace("</body>", inject + "</body>", 1)
     components.html(html, height=1500, scrolling=True)
 
 DB = "salesdb.db"
@@ -81,13 +97,37 @@ def _parse_cell(text, room, time_label):
                 cap=int(m.group("cap")), enrolled=int(m.group("enrolled")),
                 assigned=int(m.group("assigned")), start_time=time_label)
 
+def _tt_source_htmls():
+    """시간표 원본 (name, html_text) 목록. DB 업로드분이 있으면 그것만, 없으면 `인트라넷 시간표/` 폴더. (캐시 안 함 — 업로드 반영)"""
+    import base64
+    try:
+        ups = q("SELECT name, content_b64 FROM tt_upload ORDER BY name")
+    except Exception:
+        ups = []
+    if ups:
+        out = []
+        for name, b64 in ups:
+            try:
+                out.append((name, base64.b64decode(b64).decode("utf-8", "replace")))
+            except Exception:
+                pass
+        return out
+    out = []
+    for p in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                out.append((os.path.basename(p), f.read()))
+        except Exception:
+            pass
+    return out
+
 @st.cache_data
-def _load_timetable(_cache_key):
+def _load_timetable(_cache_key, htmls):
     sessions = []
     seen = set()  # 같은 강좌가 여러 스냅샷 파일에 중복 등록되는 걸 걸러냄
-    for path in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
+    for _name, html in htmls:
         try:
-            df = pd.read_html(path, header=[0, 1])[0]
+            df = pd.read_html(io.StringIO(html), header=[0, 1])[0]
         except Exception:
             continue
         df = df[df.iloc[:, 0] != "정원"].reset_index(drop=True)
@@ -115,9 +155,9 @@ def _load_timetable(_cache_key):
     return sessions
 
 def get_timetable():
-    files = glob.glob(os.path.join(TT_DIR, "*.xls"))
-    key = tuple(sorted((os.path.basename(f), os.path.getmtime(f)) for f in files))
-    return _load_timetable(key)
+    htmls = tuple(_tt_source_htmls())
+    key = tuple((n, hashlib.md5(h.encode("utf-8", "replace")).hexdigest()) for n, h in htmls)
+    return _load_timetable(key, htmls)
 
 # ── 개인 시간표(양식 xlsx) 파싱 ───────────────────────────────────
 def _parse_personal_cell(text):
@@ -406,6 +446,11 @@ def get_db():
         month TEXT, week_no INTEGER, assignee TEXT DEFAULT '',
         start_date TEXT, end_date TEXT, target INTEGER DEFAULT 0,
         PRIMARY KEY (month, week_no, assignee));
+
+    CREATE TABLE IF NOT EXISTS tt_upload(
+        name TEXT PRIMARY KEY,
+        content_b64 TEXT NOT NULL,
+        uploaded_at INTEGER DEFAULT 0);
     """)
     c.commit()
     # 조직 개편: 2-3팀 → 2-2팀 (2026-08). 기존 행/GitHub 백업 DB에도 반영 (idempotent)
@@ -486,6 +531,22 @@ def get_state(key, default=None):
 def set_state(key, value):
     run("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value))
+
+# ── 공유 시간표 업로드 (팀 전체가 같은 시간표를 쓰도록 DB에 저장 → GitHub DB 백업으로 동기화) ──
+def tt_uploads():
+    return q("SELECT name, content_b64 FROM tt_upload ORDER BY name")
+
+def save_tt_upload(name, raw_bytes):
+    import base64
+    run("INSERT INTO tt_upload(name,content_b64,uploaded_at) VALUES(?,?,?) "
+        "ON CONFLICT(name) DO UPDATE SET content_b64=excluded.content_b64, uploaded_at=excluded.uploaded_at",
+        (name, base64.b64encode(raw_bytes).decode(), int(time.time())))
+
+def del_tt_upload(name):
+    run("DELETE FROM tt_upload WHERE name=?", (name,))
+
+def clear_tt_uploads():
+    run("DELETE FROM tt_upload")
 
 def get_team_members():
     try:
@@ -877,8 +938,28 @@ with st.sidebar:
 # ※ 메뉴를 4개로 쪼개면 각각 별도 iframe 이라 업로드한 엑셀이 공유 안 됨 → 한 embed 로 유지.
 if page == "📅 시간표":
     st.markdown("#### 시간표 · 강의배정 · 개강안내문 · 상담시간표")
-    st.caption("맨 위 탭으로 네 화면을 오갑니다. **엑셀은 '파일 업로드' 탭에서 한 번만 올리면** 나머지 탭에 모두 반영됩니다. 셀 클릭·복사·PNG 저장 전부 이 안에서 동작.")
-    render_timetable_tool("")
+    _ups = tt_uploads()
+    with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개 등록됨)", expanded=not _ups):
+        st.caption("여기 올린 시간표 하나가 **대시보드 전체(강의배정·개강안내문·상담시간표 + 홈의 배정/문자 기능)** 에 함께 쓰입니다. "
+                   "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB에 저장돼 팀원 모두에게 반영됩니다.")
+        up = st.file_uploader("강의시간표 xls", type=["xls", "xlsx"], accept_multiple_files=True,
+                              key="tt_up", label_visibility="collapsed")
+        if up:
+            for f in up:
+                save_tt_upload(f.name, f.getvalue())
+            st.success(f"{len(up)}개 저장됨"); st.rerun()
+        if _ups:
+            for name, _b64 in _ups:
+                cx, cy = st.columns([1, 0.12])
+                cx.markdown(f"<div style='font-size:12px;padding:4px 0'>· {name}</div>", unsafe_allow_html=True)
+                if cy.button("✕", key=f"delu_{name}"):
+                    del_tt_upload(name); st.rerun()
+            if st.button("전체 삭제 (인트라넷 시간표/ 폴더 기본값으로 되돌림)"):
+                clear_tt_uploads(); st.rerun()
+        else:
+            st.info("아직 업로드된 시간표 없음 — 지금은 저장소의 `인트라넷 시간표/` 폴더 파일을 기본으로 씁니다.")
+    st.caption("맨 위 탭으로 네 화면을 오갑니다. 위에서 올린 시간표는 아래 도구에도 자동 반영됩니다(재업로드 불필요). 셀 클릭·복사·PNG 저장 전부 이 안에서 동작.")
+    render_timetable_tool("", preload=_ups or None)
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
