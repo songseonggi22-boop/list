@@ -900,7 +900,7 @@ with left:
 <div class="db-card">
   <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:14px'>
     <div class="db-card-title" style="margin:0">🗓️ 캘린더 일정</div>
-    <div style='font-size:13px;font-weight:600;color:#666'>{yr}년 {mo}월</div>
+    <div style='font-size:13px;font-weight:600;color:var(--color-text-secondary)'>{yr}년 {mo}월</div>
   </div>
   <div class="cal-grid">
     <div class="cal-head">월</div><div class="cal-head">화</div>
@@ -945,7 +945,7 @@ with right:
     st.markdown('<div class="db-card" style="margin-bottom:14px"><div class="db-card-title">🔵 상담 일정</div>',
                 unsafe_allow_html=True)
     if not by_date:
-        st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">예정된 상담 없음</div>',
+        st.markdown('<div style="color:var(--color-muted);font-size:11px;text-align:center;padding:12px 0">예정된 상담 없음</div>',
                     unsafe_allow_html=True)
     for d in sorted(by_date):
         dd  = datetime.strptime(d, "%Y-%m-%d")
@@ -1064,7 +1064,7 @@ with right:
                     pct = get_weekday_pct(person, week_start)
                     st.markdown(f"""
 <div style='margin-bottom:8px'>
-  <div style='display:flex;justify-content:space-between;font-size:11px;color:#666'>
+  <div style='display:flex;justify-content:space-between;font-size:11px;color:var(--color-text-secondary)'>
     <span>진행률</span><span><b>{pct}%</b></span>
   </div>
   <div style='background:#EDF2F6;border-radius:6px;height:8px;overflow:hidden'>
@@ -1078,7 +1078,7 @@ with right:
 
                 cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
                 if not cat_tasks:
-                    st.markdown('<div style="color:#ccc;font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
+                    st.markdown('<div style="color:var(--color-muted);font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
                                 unsafe_allow_html=True)
 
                 for t in cat_tasks:
@@ -1121,7 +1121,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 st.markdown("""
 <div class="db-card">
   <div class="db-card-title">📋 시간표 배정 자동화</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+  <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
     정보 입력 → 배정 문구 자동 생성 후 복사
   </div>
 </div>""", unsafe_allow_html=True)
@@ -1367,9 +1367,9 @@ if gtype == "신규 배정":
             result = gen_text("신규", nd=nd.isoformat(), nt=nt, ns=ns, nts=nts)
 
 elif gtype == "과목변경 배정":
-    st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전 강좌</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 강좌</div>", unsafe_allow_html=True)
     old_s = _course_picker("이전", "cg_old")
-    st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후 강좌</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 강좌</div>", unsafe_allow_html=True)
     new_s = _course_picker("변경 후", "cg_new")
     if old_s and new_s:
         auto_ofee = lookup_fee(old_s["subject"], _is_weekend_days(old_s["days"])) or 0
@@ -1388,9 +1388,9 @@ elif gtype == "배정 취소":
         result = gen_text("취소", od=cancel_s["start_date"], ot=cancel_s["start_time"], os_=cancel_s["subject"])
 
 elif gtype == "날짜변경 배정":
-    st.markdown("<div style='font-size:11px;color:#999;margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin-bottom:4px'>▸ 이전 일정</div>", unsafe_allow_html=True)
     old_s = _course_picker("이전", "dc_old")
-    st.markdown("<div style='font-size:11px;color:#999;margin:8px 0 4px'>▸ 변경 후 일정</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:11px;color:var(--color-muted);margin:8px 0 4px'>▸ 변경 후 일정</div>", unsafe_allow_html=True)
     new_s = _course_picker("변경 후", "dc_new")
     if old_s and new_s and st.button("✨ 문구 생성", use_container_width=True, key="dc_gen"):
         result = gen_text("날짜변경", od=old_s["start_date"], ot=old_s["start_time"], os_=old_s["subject"],
@@ -1409,7 +1409,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 st.markdown("""
 <div class="db-card">
   <div class="db-card-title">📨 개강 안내 문자 생성</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+  <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
     강좌를 고르면 학생에게 보낼 개강 안내 문구가 자동으로 채워집니다.
   </div>
 </div>""", unsafe_allow_html=True)
@@ -1486,7 +1486,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 st.markdown("""
 <div class="db-card">
   <div class="db-card-title">📈 영업일지 자동 생성</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+  <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
     상담건수·매출은 캘린더 기준으로 자동 채워집니다. 나머지 값은 아래 칸에서 바로 수정해서 쓰세요.
   </div>
 </div>""", unsafe_allow_html=True)
@@ -1606,16 +1606,21 @@ _fingerprint_src += "|" + "|".join(f"{c['id']}:{c['result_status']}:{c['actual_a
                                     for c in consults)
 rt_key = hashlib.md5(_fingerprint_src.encode()).hexdigest()[:10]
 
+def _report_block(default_text, key_base, edit_height):
+    """복사 우선(코드블록 우상단 복사 버튼) + 접이식 직접 수정."""
+    edited = st.session_state.get(f"{key_base}_{rt_key}_{rt_seq}")
+    st.code(edited if edited else default_text, language=None)
+    with st.expander("✏️ 직접 수정"):
+        st.text_area("직접 수정", value=default_text, height=edit_height,
+                     key=f"{key_base}_{rt_key}_{rt_seq}", label_visibility="collapsed")
+
 t1, t2, t3 = st.tabs(["출근보고", "15시보고", "마감보고"])
 with t1:
-    st.text_area("출근보고 (직접 수정 가능)", value=morning_default, height=180,
-                 key=f"rt_morning_{rt_key}_{rt_seq}", label_visibility="collapsed")
+    _report_block(morning_default, "rt_morning", 180)
 with t2:
-    st.text_area("15시보고 (직접 수정 가능)", value=pm3_default, height=140,
-                 key=f"rt_pm3_{rt_key}_{rt_seq}", label_visibility="collapsed")
+    _report_block(pm3_default, "rt_pm3", 140)
 with t3:
-    st.text_area("마감보고 (직접 수정 가능)", value=close_default, height=320,
-                 key=f"rt_close_{rt_key}_{rt_seq}", label_visibility="collapsed")
+    _report_block(close_default, "rt_close", 320)
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
@@ -1623,7 +1628,7 @@ st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 st.markdown("""
 <div class="db-card">
   <div class="db-card-title">☁️ 구글 시트 백업</div>
-  <div style='font-size:12px;color:#999;margin-top:-10px;margin-bottom:14px'>
+  <div style='font-size:12px;color:var(--color-muted);margin-top:-10px;margin-bottom:14px'>
     하루 한 번 자동으로 상담·할일·일지 데이터를 백업합니다. DB는 그대로 sqlite를 씁니다.
   </div>
 </div>""", unsafe_allow_html=True)
