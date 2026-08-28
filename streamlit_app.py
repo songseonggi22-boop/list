@@ -940,7 +940,17 @@ with st.sidebar:
 # ※ 메뉴를 4개로 쪼개면 각각 별도 iframe 이라 업로드한 엑셀이 공유 안 됨 → 한 embed 로 유지.
 if page == "📅 시간표":
     st.markdown("#### 시간표 · 강의배정 · 개강안내문 · 상담시간표")
+    st.caption("**한 칸/여러 칸 선택 → 문서 만들기 → 인쇄**는 아래 도구의 탭에 있습니다 — "
+               "**개강안내문** 탭: 칸 하나 클릭 → 안내문(복사). "
+               "**상담시간표** 탭: 여러 칸 토글 선택 → 하단 막대의 만들기 버튼 → 미리보기에서 **인쇄 / PNG 저장**. "
+               "인쇄·PNG가 임베드 안에서 안 되면 아래 **‘전체 화면 새 탭에서 열기’** 링크로 여세요.")
     _ups = tt_uploads()
+    _sample = os.path.join(os.path.dirname(__file__), "시간표도구", "data", "시간표.xls")
+    if not _ups and os.path.exists(_sample):
+        if st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
+            import base64 as _sb
+            with open(_sample, "rb") as _sf:
+                _ups = [("샘플_시간표.xls", _sb.b64encode(_sf.read()).decode())]
     with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개 등록됨)", expanded=not _ups):
         st.caption("여기 올린 시간표 하나가 **대시보드 전체(강의배정·개강안내문·상담시간표 + 홈의 배정/문자 기능)** 에 함께 쓰입니다. "
                    "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB에 저장돼 팀원 모두에게 반영됩니다.")
