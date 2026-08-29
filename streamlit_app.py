@@ -650,6 +650,9 @@ def add_task(title, cat, d, assignee):
 
 def toggle_task(tid, v): run("UPDATE tasks SET is_done=? WHERE id=?", (int(v), tid))
 def del_task(tid):       run("DELETE FROM tasks WHERE id=?", (tid,))
+def update_task(tid, title, cat, d, assignee):
+    run("UPDATE tasks SET title=?, category=?, task_date=?, assignee=? WHERE id=?",
+        (title, cat, d, assignee, tid))
 
 def add_consult(name, d, t, rev, ctype, assignee, visit_type="신규방문"):
     run("""INSERT INTO consultations(name,sched_date,sched_time,expected_revenue,ctype,assignee,visit_type,created_at)
@@ -1266,8 +1269,121 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "🍚 점심값 정산"]
+    PAGES = ["🏠 홈", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
+
+# ── ✅ 체크리스트 (홈에서 분리 · fragment 인라인 체크) ────────────────
+if page == "✅ 체크리스트":
+    st.markdown("#### ✅ 체크리스트")
+    st.caption("오늘 할 일 · 매일 한국시간 06:00에 완료 체크가 자동으로 풀립니다.")
+
+    CL_CATS = [("우선순위1", "🔴 우선순위 1"), ("우선순위2", "🟠 우선순위 2"), ("주중업무", "🔵 주중업무")]
+    _members = get_team_members() + ["미지정"]
+
+    fc = st.columns([1.4, 1, 1])
+    who = fc[0].selectbox("담당자", ["전체"] + _members, label_visibility="collapsed")
+    edit_mode = fc[2].toggle("✏️ 편집", key="cl_edit")
+
+    all_tasks = get_tasks()
+    view = [t for t in all_tasks if who == "전체" or (t["assignee"] or "미지정") == who]
+    done_n = sum(1 for t in view if t["is_done"])
+    tot_n = len(view)
+    pctv = round(done_n / tot_n * 100) if tot_n else 0
+    fc[1].markdown(f"<div style='text-align:right;font-size:12px;color:var(--color-text-secondary);padding-top:6px'>"
+                   f"{done_n} / {tot_n} 완료</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='background:#EDF2F6;border-radius:6px;height:8px;overflow:hidden;margin:2px 0 14px'>"
+                f"<div style='background:var(--color-primary);height:100%;width:{pctv}%'></div></div>",
+                unsafe_allow_html=True)
+
+    if edit_mode:
+        # 편집 모드 — 표에서 제목·담당자·분류·날짜 일괄 수정
+        import pandas as _pd
+        rows = [{"id": t["id"], "완료": bool(t["is_done"]), "할 일": t["title"],
+                 "담당자": t["assignee"] or "", "분류": t["category"],
+                 "날짜": t["task_date"] or ""} for t in view]
+        df = _pd.DataFrame(rows, columns=["id", "완료", "할 일", "담당자", "분류", "날짜"])
+        ed = st.data_editor(
+            df, key="cl_editor", hide_index=True, use_container_width=True, num_rows="fixed",
+            column_config={
+                "id": None,
+                "완료": st.column_config.CheckboxColumn("✓"),
+                "할 일": st.column_config.TextColumn("할 일", width="large"),
+                "담당자": st.column_config.TextColumn("담당자", width="small"),
+                "분류": st.column_config.SelectboxColumn("분류", options=[c[0] for c in CL_CATS]),
+                "날짜": st.column_config.TextColumn("날짜(YYYY-MM-DD)", width="small"),
+            },
+        )
+        if st.button("💾 편집 저장", type="primary"):
+            orig = {r["id"]: r for r in rows}
+            for _, r in ed.iterrows():
+                o = orig.get(r["id"])
+                if not o:
+                    continue
+                if (r["할 일"] != o["할 일"] or r["담당자"] != o["담당자"]
+                        or r["분류"] != o["분류"] or r["날짜"] != o["날짜"]):
+                    update_task(int(r["id"]), str(r["할 일"]).strip(), r["분류"],
+                                str(r["날짜"]).strip(), str(r["담당자"]).strip())
+                if bool(r["완료"]) != o["완료"]:
+                    toggle_task(int(r["id"]), bool(r["완료"]))
+            st.toast("저장됨"); st.rerun()
+        with st.expander("👥 담당자 추가/삭제"):
+            m1, m2 = st.columns([3, 1])
+            nm = m1.text_input("이름", key="cl_new_m", label_visibility="collapsed", placeholder="담당자 이름")
+            if m2.button("추가", key="cl_add_m") and nm.strip():
+                add_team_member(nm.strip()); st.rerun()
+            for m in get_team_members():
+                r1, r2 = st.columns([3, 1])
+                r1.caption(m)
+                if r2.button("삭제", key=f"cl_del_m_{m}"):
+                    remove_team_member(m); st.rerun()
+        st.stop()
+
+    @st.fragment
+    def _checklist_body():
+        cur = [t for t in get_tasks() if who == "전체" or (t["assignee"] or "미지정") == who]
+        for cat_key, cat_label in CL_CATS:
+            ct = [t for t in cur if t["category"] == cat_key]
+            st.markdown(f"<div style='font-size:12px;font-weight:700;margin:14px 0 6px;color:var(--color-text-secondary)'>"
+                        f"{cat_label} · {sum(1 for t in ct if t['is_done'])}/{len(ct)}</div>", unsafe_allow_html=True)
+
+            if cat_key == "주중업무" and who != "전체" and who != "미지정":
+                wp = get_weekday_pct(who, week_start)
+                nwp = st.slider("주중 진행률", 0, 100, wp, step=5, key=f"cl_wp_{who}")
+                if nwp != wp:
+                    set_weekday_pct(who, week_start, nwp); st.rerun(scope="fragment")
+
+            if not ct:
+                st.markdown("<div style='color:var(--color-muted);font-size:12px;padding:4px 0 2px'>· 항목 없음</div>",
+                            unsafe_allow_html=True)
+            for t in ct:
+                cc = st.columns([0.08, 0.84, 0.08])
+                dv = cc[0].checkbox("완", value=bool(t["is_done"]), key=f"cl_ck_{t['id']}",
+                                    label_visibility="collapsed")
+                if dv != bool(t["is_done"]):
+                    toggle_task(t["id"], dv); st.rerun(scope="fragment")
+                dd = f" · {t['task_date'][5:].replace('-', '.')}" if t["task_date"] else ""
+                nm = f" · {t['assignee']}" if (who == "전체" and t["assignee"]) else ""
+                style = ("color:var(--color-muted);text-decoration:line-through" if t["is_done"]
+                         else "color:var(--color-text)")
+                cc[1].markdown(f"<div style='font-size:13.5px;padding-top:4px;{style}'>{t['title']}"
+                               f"<span style='font-size:11px;color:var(--color-muted)'>{dd}{nm}</span></div>",
+                               unsafe_allow_html=True)
+                if cc[2].button("✕", key=f"cl_x_{t['id']}"):
+                    del_task(t["id"]); st.rerun(scope="fragment")
+
+        # 빠른 추가
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        with st.form("cl_add", clear_on_submit=True):
+            a = st.columns([2.2, 1, 0.8])
+            nt = a[0].text_input("할 일", placeholder="+ 새 할 일", label_visibility="collapsed", key="cl_nt")
+            ncat = a[1].selectbox("분류", [c[0] for c in CL_CATS], label_visibility="collapsed", key="cl_ncat")
+            if a[2].form_submit_button("추가", use_container_width=True) and nt.strip():
+                asg = "" if who in ("전체", "미지정") else who
+                add_task(nt.strip(), ncat, today.isoformat(), asg)
+                st.rerun(scope="fragment")
+
+    _checklist_body()
+    st.stop()
 
 # ── 점심값 정산 (가계부 스타일) ─────────────────────────────────
 if page == "🍚 점심값 정산":
@@ -1684,91 +1800,6 @@ with right:
             if new_pct != c["deposit_pct"]:
                 set_consult_pct(c["id"], new_pct); st.rerun()
 
-    st.markdown('<div class="db-card"><div class="db-card-title">☑ TO DO LIST</div>', unsafe_allow_html=True)
-    st.caption("매일 한국시간 06:00에 완료 체크가 초기화돼요.")
-
-    with st.expander("👥 담당자 관리"):
-        mc1, mc2 = st.columns([3, 1])
-        new_member = mc1.text_input("담당자 이름 추가", key="new_member_name", label_visibility="collapsed",
-                                     placeholder="담당자 이름 입력")
-        if mc2.button("추가", key="add_member_btn", use_container_width=True) and new_member.strip():
-            add_team_member(new_member.strip()); st.rerun()
-        for m in get_team_members():
-            rc1, rc2 = st.columns([3, 1])
-            rc1.caption(m)
-            if rc2.button("삭제", key=f"del_member_{m}"):
-                remove_team_member(m); st.rerun()
-
-    CATS = [
-        ("우선순위1","우선순위 1","kp1"),
-        ("우선순위2","우선순위 2","kp2"),
-        ("주중업무", "주중업무",  "kp3"),
-    ]
-    groups = get_team_members() + ["미지정"]
-    todo_tabs = st.tabs([f"👤 {p}" for p in groups])
-
-    for tab, person in zip(todo_tabs, groups):
-      with tab:
-        person_tasks = [t for t in tasks if (t["assignee"] or "미지정") == person]
-        k1, k2, k3 = st.columns(3, gap="small")
-
-        for col_w, (cat_key, cat_label, kp_cls) in zip([k1, k2, k3], CATS):
-            with col_w:
-                st.markdown(f'<div class="k-head {kp_cls}">{cat_label}</div>', unsafe_allow_html=True)
-
-                if cat_key == "주중업무":
-                    pct = get_weekday_pct(person, week_start)
-                    st.markdown(f"""
-<div style='margin-bottom:8px'>
-  <div style='display:flex;justify-content:space-between;font-size:11px;color:var(--color-text-secondary)'>
-    <span>진행률</span><span><b>{pct}%</b></span>
-  </div>
-  <div style='background:#EDF2F6;border-radius:6px;height:8px;overflow:hidden'>
-    <div style='background:#5C7A94;height:100%;width:{pct}%'></div>
-  </div>
-</div>""", unsafe_allow_html=True)
-                    new_pct = st.slider("진행률", 0, 100, pct, step=5,
-                                        key=f"pct_slider_{person}", label_visibility="collapsed")
-                    if new_pct != pct:
-                        set_weekday_pct(person, week_start, new_pct); st.rerun()
-
-                cat_tasks = [t for t in person_tasks if t["category"] == cat_key]
-                if not cat_tasks:
-                    st.markdown('<div style="color:var(--color-muted);font-size:11px;text-align:center;padding:12px 0">할 일 없음</div>',
-                                unsafe_allow_html=True)
-
-                for t in cat_tasks:
-                    is_done   = bool(t["is_done"])
-                    d_display = t["task_date"][5:].replace("-",".") if t["task_date"] else ""
-                    tc        = "done" if is_done else ""
-
-                    st.markdown(f"""
-<div class="t-card">
-  {'<div class="t-date">'+d_display+'</div>' if d_display else ''}
-  <div class="t-title {tc}">{t['title']}</div>
-</div>""", unsafe_allow_html=True)
-
-                    c1, c2 = st.columns([2.5, 0.8])
-                    new_done = c1.checkbox("완료", value=is_done, key=f"t{t['id']}")
-                    if new_done != is_done:
-                        toggle_task(t["id"], new_done); st.rerun()
-                    if c2.button("✕", key=f"d{t['id']}"):
-                        del_task(t["id"]); st.rerun()
-
-                # 할 일 추가 폼 (이 탭 담당자로 자동 배정, 필요하면 수정 가능)
-                with st.form(f"af_{person}_{cat_key}", clear_on_submit=True):
-                    new_title = st.text_input("", placeholder="＋ 새 페이지",
-                                              label_visibility="collapsed", key=f"ti_{person}_{cat_key}")
-                    r = st.columns(2)
-                    nd_val = r[0].date_input("날짜", value=today,
-                                           label_visibility="collapsed", key=f"nd_{person}_{cat_key}")
-                    new_assignee = r[1].text_input("담당자", value=("" if person == "미지정" else person),
-                                           placeholder="담당자", label_visibility="collapsed",
-                                           key=f"as_{person}_{cat_key}")
-                    if st.form_submit_button("추가", use_container_width=True) and new_title.strip():
-                        add_task(new_title.strip(), cat_key, nd_val.isoformat(), new_assignee.strip()); st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
