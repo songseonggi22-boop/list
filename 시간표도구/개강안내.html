@@ -1627,7 +1627,13 @@ function buildCoursePlan(selected, months){
     return name.length<=9 ? 12 : Math.max(8, Math.round(12*9/name.length));
   }
   function cellInner(classes){
-    return classes.map(c=>`<div style="font-weight:700;font-size:${subjectFontSize(c.subject)}px;color:#3D352D">${c.subject}</div><div style="font-size:10px;color:#444;line-height:1.7">${c.dayRaw||''}<br>개:${c.startDate}<br>종:${c.endDate}</div>`)
+    // 과목이 2개 이상 한 칸에 겹치면 폰트·행간을 줄여 넘침 방지
+    const multi=classes.length>1;
+    const subPx=n=>multi?Math.max(8,subjectFontSize(n)-1):subjectFontSize(n);
+    const metaPx=multi?9:10;
+    const lh=multi?1.4:1.7;
+    // 요일은 파싱 시 정규화된 c.day 사용 (인트라넷 원본 dayRaw 는 학기별 표기가 이어붙어 "화목화목금" 처럼 나옴)
+    return classes.map(c=>`<div style="font-weight:700;font-size:${subPx(c.subject)}px;color:#3D352D">${c.subject}</div><div style="font-size:${metaPx}px;color:#444;line-height:${lh}">${c.day||c.dayRaw||''}<br>개:${c.startDate}<br>종:${c.endDate}</div>`)
       .join('<div style="margin:3px 0;border-top:1px dashed #ccc"></div>');
   }
 
@@ -1671,18 +1677,18 @@ function buildCoursePlan(selected, months){
         const month=months[mi];
         const courses=(selected[month]?.[type]||[]).filter(c=>parseRange(c.timeStr).startMin===slotMin);
         if(!courses.length){cells.push(`<td class="cp-cell cp-cell-empty"></td>`);mi++;continue;}
-        // 이 강의 시간 범위 내에 있는 시작 슬롯 수 → rowspan
-        const{endMin}=parseRange(courses[0].timeStr);
+        // 한 칸에 겹친 과목 전체 중 가장 늦게 끝나는 시간 기준 → rowspan
+        const endMin=Math.max(...courses.map(c=>parseRange(c.timeStr).endMin));
         let rowspan=0;
         for(const sl of slots)if(sl>=slotMin&&sl<endMin)rowspan++;
         rowspan=Math.max(1,rowspan);
-        // 월 병합 (종료월-1까지)
+        // 월 병합 (종료월-1까지). 단, 한 칸에 과목이 2개 이상이면 종강월이 제각각이라 병합하지 않음
         let colspan=1;
-        const mek=mergeEndKey(courses[0].endDate);
+        const mek=courses.length===1?mergeEndKey(courses[0].endDate):null;
         if(mek){
           for(let j=mi+1;j<months.length;j++){
             if(months[j]>mek)break;
-            if((selected[months[j]]?.[type]||[]).some(c=>parseRange(c.timeStr).startMin===slotMin))break;
+            if((selected[months[j]]?.[type]||[]).length)break;
             colspan++;
           }
         }
@@ -2269,9 +2275,20 @@ function idbHandleSet(key,val){
     req.onerror=()=>reject(req.error);
   });
 }
-function sanitizeFsName(s){
-  return (s||'').trim().replace(/[\\/:*?"<>|]/g,'_') || '무명';
+function sanitizeFsName(s,fallback='무명'){
+  return (s||'').trim().replace(/[\\/:*?"<>|]/g,'_') || fallback;
 }
+// 성명 미입력 시 파일명에 쓸 의미 있는 태그: 선택 강의의 요일패턴+시간 (예: "화목금_1900-2200")
+function consultPlanTag(){
+  const cls=[];
+  const src=(typeof consultLastSelected==='object'&&consultLastSelected)||{};
+  for(const m in src) for(const t in src[m]) for(const c of (src[m][t]||[])) cls.push(c);
+  if(!cls.length) return '';
+  const days=[...new Set(cls.map(c=>String(c.day||c.dayRaw||'').replace(/\s*\(.*\)\s*/,'').replace(/[\/·]/g,'')))].filter(Boolean);
+  const times=[...new Set(cls.map(c=>String(c.timeStr||'').replace(/:/g,'').replace('~','-')))].filter(Boolean);
+  return [days.join('-'),times.join('_')].filter(Boolean).join('_');
+}
+function todayIso(){ return new Date().toISOString().slice(0,10); }
 async function getEstimateRootHandle(){
   let handle=await idbHandleGet('estimateRoot').catch(()=>null);
   if(handle){
@@ -2313,8 +2330,10 @@ async function downloadConsultPNG(){
     const canvas=await html2canvas(document.querySelector('.cp-doc'),{
       scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true
     });
-    const name=sanitizeFsName(document.getElementById('cp-name-input')?.textContent);
-    const date=sanitizeFsName(document.getElementById('cp-date-input')?.textContent);
+    const rawName=(document.getElementById('cp-name-input')?.textContent||'').trim();
+    // 성명 미입력 시 요일/시간 태그 → 그것도 없으면 "상담" (無名_無名 방지)
+    const name=sanitizeFsName(rawName || consultPlanTag() || '상담','상담');
+    const date=sanitizeFsName(document.getElementById('cp-date-input')?.textContent, todayIso());
     const filename=`시간표_${name}_${date}.png`;
     const root=window.showDirectoryPicker ? await getEstimateRootHandle() : null;
 
@@ -2353,8 +2372,9 @@ async function downloadEstimatePNG(){
     const canvas=await html2canvas(docEl,{
       scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true
     });
-    const name=sanitizeFsName(document.getElementById('est-name-input')?.textContent);
-    const date=sanitizeFsName(document.getElementById('est-date-input')?.textContent);
+    const rawName=(document.getElementById('est-name-input')?.textContent||'').trim();
+    const name=sanitizeFsName(rawName || consultPlanTag() || '상담','상담');
+    const date=sanitizeFsName(document.getElementById('est-date-input')?.textContent, todayIso());
     const filename=`견적서_${name}_${date}.png`;
     const root=window.showDirectoryPicker ? await getEstimateRootHandle() : null;
 
