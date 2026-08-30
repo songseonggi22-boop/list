@@ -1822,39 +1822,54 @@ if page == "🍚 점심값 정산":
             set_lunch_members([x.strip() for x in _nm.split(",") if x.strip()]); st.rerun()
     st.stop()
 
-# ── 📝 메모 양식 (카테고리별 텍스트 양식 · 담당자 자동 치환 · 팀 공유 편집) ──
+# ── 📝 메모 양식 (버튼 그리드 + 다이얼로그 · 담당자 자동 치환 · 팀 공유 편집) ──
 if page == "📝 메모 양식":
     st.markdown("#### 📝 메모 양식")
-    st.caption("컨택메모·상담완료·예약·안내메세지 등 12종. 양식은 팀이 함께 편집·저장하고, "
+    st.caption("아래 양식 버튼을 누르면 편집 창이 뜹니다. 양식은 팀이 함께 편집·저장하고, "
                "담당자 이름·전화는 **볼 때·복사할 때 자동으로** 채워집니다. 저장은 플레이스홀더가 남은 원본으로 됩니다.")
 
     _cs = get_consultants()
-    _mc1, _mc2 = st.columns([1, 1.4])
-    _msel = _mc1.selectbox("담당자", list(range(len(_cs))),
-                           format_func=lambda i: (_cs[i]["name"] or "(이름 미입력)"), key="memo_consultant_sel")
+    _msel = st.selectbox("담당자", list(range(len(_cs))),
+                         format_func=lambda i: (_cs[i]["name"] or "(이름 미입력)"), key="memo_consultant_sel")
     _mconsult = dict(_cs[_msel])
     if not (_mconsult.get("name") or "").strip():
-        _mc1.caption("담당자 이름이 비어 있어요 → 🗓️ 상담시간표의 ‘담당자 명단 관리’에서 채우면 여기에도 반영됩니다. "
-                     "지금은 플레이스홀더 그대로 나옵니다.")
-    _mkey = _mc2.selectbox("양식 종류", [k for k, _ in MEMO_LABELS],
-                           format_func=lambda k: dict(MEMO_LABELS)[k], key="memo_cat_sel")
+        st.caption("담당자 이름이 비어 있어요 → 🗓️ 상담시간표의 ‘담당자 명단 관리’에서 채우면 여기에도 반영됩니다. "
+                   "지금은 플레이스홀더 그대로 나옵니다.")
 
-    _ta_key = f"memo_ta_{_mkey}"
-    _raw = st.text_area("양식 본문 (편집·저장 대상 · 플레이스홀더 유지)", value=get_memo_tpl(_mkey),
-                        height=430, key=_ta_key)
+    st.markdown("###### 양식 선택 — 버튼을 누르면 편집 창이 뜹니다")
+    _gcols = st.columns(3)
+    for _i, (_k, _lbl) in enumerate(MEMO_LABELS):
+        if _gcols[_i % 3].button(_lbl, key=f"memo_btn_{_k}", use_container_width=True):
+            ss["memo_open"] = _k
 
-    _b1, _b2, _b3 = st.columns([1, 1, 4])
-    if _b1.button("💾 양식 저장", key="memo_save", use_container_width=True):
-        save_memo_tpl(_mkey, _raw)
-        ss.pop(_ta_key, None)
-        st.success("양식 저장됨 (팀 공유)"); st.rerun()
-    if _b2.button("↩️ 기본값으로", key="memo_reset", use_container_width=True):
-        reset_memo_tpl(_mkey)
-        ss.pop(_ta_key, None)
-        st.success("기본 양식으로 되돌렸습니다"); st.rerun()
+    # 버튼 → 양식 편집 (st.dialog 팝업, 없으면 펼침 폴백). 클로드놀이_배포판 메모 모달 방식.
+    def _memo_body(key, consultant):
+        st.markdown(f"**{dict(MEMO_LABELS)[key]}**")
+        ta_key = f"memo_ta_{key}"
+        raw = st.text_area("양식 (편집·저장 대상 · 플레이스홀더 유지)",
+                           value=get_memo_tpl(key), height=440, key=ta_key)
+        c1, c2 = st.columns(2)
+        if c1.button("💾 양식 저장", key=f"memo_save_{key}", use_container_width=True):
+            save_memo_tpl(key, raw); st.toast("양식 저장됨 (팀 공유)")
+        if c2.button("↩️ 기본값으로", key=f"memo_reset_{key}", use_container_width=True):
+            reset_memo_tpl(key); ss.pop(ta_key, None); ss.pop("memo_open", None); st.rerun()
+        st.caption("아래는 담당자·전화가 채워진 복사용본 — 오른쪽 위 복사 아이콘")
+        st.code(memo_fill(raw, consultant), language=None)
 
-    st.markdown("**📋 복사용 (담당자·전화 반영됨)** — 오른쪽 위 복사 아이콘")
-    st.code(memo_fill(_raw, _mconsult), language=None)
+    if hasattr(st, "dialog"):
+        @st.dialog("메모 양식")
+        def _memo_dialog(key, consultant):
+            _memo_body(key, consultant)
+        if ss.get("memo_open"):
+            _memo_dialog(ss.pop("memo_open"), _mconsult)
+    elif ss.get("memo_open"):  # 구버전 폴백: 버튼 그리드 아래 펼침
+        _ok = ss["memo_open"]
+        with st.container(border=True):
+            hc = st.columns([6, 1])
+            hc[0].markdown(f"##### 📝 {dict(MEMO_LABELS)[_ok]}")
+            if hc[1].button("✕ 닫기", key="memo_close", use_container_width=True):
+                ss.pop("memo_open", None); st.rerun()
+            _memo_body(_ok, _mconsult)
     st.stop()
 
 # 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
