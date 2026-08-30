@@ -495,6 +495,11 @@ def get_db():
         email TEXT DEFAULT '',
         sort INTEGER DEFAULT 0);
 
+    CREATE TABLE IF NOT EXISTS memo_tpl(
+        key TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        updated_at INTEGER DEFAULT 0);
+
     CREATE TABLE IF NOT EXISTS lunch(
         person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
         PRIMARY KEY(person, ymd));
@@ -637,6 +642,62 @@ def save_consultants(rows):
         c.executemany("INSERT INTO consultant(name,phone,mobile,email,sort) VALUES(?,?,?,?,?)", keep)
         c.commit()
     backup_db_to_github()
+
+# ── 메모 양식 (카테고리별 텍스트 양식 12종) · 팀 공유 편집 ──
+# 원본: 클로드놀이_배포판/index.html MEMO_CATEGORIES / MEMO_DEFAULTS. 순서·전문 그대로.
+MEMO_LABELS = [
+    ("contactMemo", "컨택메모"),
+    ("consultDone", "상담완료메모"),
+    ("reservation", "예약메세지"),
+    ("onlineClass", "온라인강의"),
+    ("afterContact", "연결 안내메세지"),
+    ("contactFail", "미연결 안내메세지"),
+    ("bankInfo", "입금계좌안내"),
+    ("refund", "환불일지"),
+    ("remoteCode", "비대면 참여코드"),
+    ("adobeSub", "어도비 학생구독"),
+    ("midJoin", "중도투입"),
+    ("depositReport", "입금 파악"),
+]
+
+MEMO_DEFAULTS = {
+    "consultDone": "*상담자 : 여기에_본인_이름을_입력하세요\n*직업 :\n*나이 :\n*거주지 : 대전\n*과정 관심 계기 :\n*관심 및 희망 과정 :\n*수강 목적 :\n*학교&직장 내 특이사항 : -\n*평소 가용 가능한 시간 :\n*희망 개강 시기 :\n*희망 타임 :\n*수강 예산 :\n*성격 및 성향 : 좋음\n*결제권자/완납 예정 : 완납\n*환불 리스크 :\n*추가 등록 가망 과목/시기 :\n*이외 상담 내용 :\n\n\n\n**이번 상담 때 나의 반성 및 고칠 점 :",
+    "contactMemo": "*컨텍자 : 여기에_본인_이름을_입력하세요\n*본인확인 및 문의여부 체크 : O\n*배워보시려는 계기 및 수강 희망 시기 :\n*분야 경험 및 수강 경험 여부 :\n*현재 거주지 및 평소 스케줄 어떤지 (가용시간체크) :\n*상담 명분 제시 및 상담 일정 확정 : 수업 구성 및 스케줄 안내\n*이외 상담내용 :\n\n\n\n** 수강료 / 시간표에 대한 나의 응대 : 따로 언급 x\n*같이 방문하실 지인 / 기타 특이사항 :\n* 통화시간 : 분",
+    "midJoin": "상담일자 : 2026.00.00\n등록일자 : 2026.00.00\n요청자 / 해당 수업 : 여기에_본인_이름을_입력하세요 멘토 / 00.00 00시 포토샵\n교강사 :\n특이사항 :",
+    "adobeSub": "어도비 학생 구독 안내\n\nhttps://www.adobe.com/kr/creativecloud/buy/students.html\n\n어도비 홈페이지 접속하신 후\n\n1) 왼쪽 상단 : [크리에이티비티 및 디자인] 클릭\n2) 구매 대상 : [학생 및 교사] 선택\n3) 플랜 또는 프로그램 선택 후 이메일 작성\n4) 교육 기관에 SBS아카데미컴퓨터아트학원 입력\n\n이후 구독 진행해주시면 됩니다!",
+    "remoteCode": "■비대면 참여코드 안내■\n\nSBS아카데미AIX학원 대전입니다.\n\n과정 : 마야4\n개강 : 07.15\n종강 : 08.10\n시간 : 19:00-22:00\n접속코드 : https://discord.gg/bKB7R4JjrU\n\n과정 : AI비주얼디자인\n개강 : 07.22\n종강 : 08.04\n시간 : 13:00-15:00\n접속코드 : https://discord.gg/APwvkCRWhC\n\n과정 : AI마케팅영상제작\n개강 : 08.05\n종강 : 08.19\n시간 : 13:00-15:00\n접속코드 : https://discord.gg/6TQNmcT7mq",
+    "refund": "-최초요청일: 26.00.00\n-면담일: 26.00.00\n-수강전/후:\n-담당멘토: 여기에_본인_이름을_입력하세요\n-등록과목:\n-등록금액:\n-공제금액:\n-실환불액:\n-결제수단:\n-중퇴사유:\n\n환불계좌 :\n\n\n\n환불보고\n\n-수강생:\n-요청시점:\n-어플접수:\n-등록과목:\n-공제내용:\n-등록금액:\n-공제금액:\n-실환불액:\n-요청내용:",
+    "bankInfo": "입금계좌 안내(대전지점)\n\n오프라인\n입금은행 : 기업은행\n계좌번호 : 142-149362-01-021\n입금금액 : 0원\n예금주 : (주)에스씨에이아카데미대전\n\n입금계좌 안내(대전지점)\n\n온라인\n입금은행 : 기업은행\n계좌번호 : 336-103411-04-020\n입금금액 : 0원\n예금주 : (주)코리아온라인클래스\n\n현금영수증 발행시 따로 번호 알려 주시면 처리 도와드립니다.\n\n\n생년월일 :\n이메일 :\n거주지 : 동까지만 부탁드릴게요 !\n           ex) 대전 서구 둔산동",
+    "contactFail": "안녕하세요 !\n\n홈페이지 통해서 컴활 자격증 과정으로 문의 남겨주신\n대전SBS아카데미AIX학원 여기에_본인_이름을_입력하세요 교육멘토입니다.\n\n문의 남겨주신 내용 관련해서 안내 도와드리고자\n042번호로 연락 드렸으나 통화 힘드신 것 같아\n카톡 남겨드려요 !\n\n혹시 통화 괜찮으신 시간대 있으실까요 ?",
+    "afterContact": "안녕하세요 !\n\n조금 전에  과정 안내차 연락드린\nSBS아카데미 여기에_본인_이름을_입력하세요 교육멘토입니다.\n\n명함 남겨드리며 현재 학원에서 진행 중인 수업과\n온라인 강의까지 살펴보실 수 있게 링크 첨부드리니\n참고 해주시면 감사하겠습니다 !\n\n궁금하신 사항 있으시면 연락 부탁드릴게요 !\n\n📌 학원홈페이지 : http://sbsdjartcom.com/\n📌 온라인 강의 : https://www.ddazua.com/",
+    "onlineClass": "📍 따즈아 온라인 강의 안내\n\n─────────────────\n📌 홈페이지\nhttps://www.ddazua.com/\n\n📌 쿠폰 코드\n\n─────────────────\n📍 쿠폰 코드 입력 방법\n\n1. 회원가입 후 로그인\n\n2. 마이페이지 ▶ 쿠폰 관리 이동\n\n3. 쿠폰 코드 입력 후 적용\n─────────────────\n📍 온라인 강의 이용 방법\n\n1. 내 강의실 이동\n\n2. 프리패스 강좌 선택\n\n3. 수강하실 강의 선택 후 학습 시작\n─────────────────\n\n추가로 궁금하신 사항이 있으시면\n언제든지 편하게 연락 주세요 😊",
+    "reservation": "📍SBS아카데미AIX학원\n\n안녕하세요! 여기에_본인_이름을_입력하세요 멘토입니다 😊\n정확한 상담 도와드리기 위해 예약 안내드립니다.\n\n─────────────────\n[SBS아카데미 / 대전지점]\n📌 예약자명 : 000 님\n📌 교육과정 :\n📌 상담일정 : 00월 00일() 00:00\n─────────────────\n\n📍 주소\n대전 서구 둔산동 1110\n굿모닝어학원빌딩 9층\n\n🚗 주차 안내\n지하 기계식주차 가능\n※ 대형 SUV는 진입 불가하므로\n주변 공영주차장 이용 부탁드립니다.\n\n📞 문의전화\n042-710-8921\n\n⏰ 일정 변경이 필요하신 경우\n미리 연락 주시면 감사하겠습니다 :)\n\n─────────────────\nSBS아카데미AIX학원 대전지점\n멘토 여기에_본인_이름을_입력하세요 드림",
+    # depositReport 는 원본이 계산 모달(15:00 보고)이라 양식 텍스트가 없어 스켈레톤으로 새로 작성 (특수 계산 폼은 범위 밖)
+    "depositReport": "[15시 입금 파악]\n\n■ 건별 (시각 / 구분 / 방식 / 금액)\n- 00:00 신규 방문 000만원\n- 00:00 추가 온라인 000만원\n\n■ 익일 · 모레 · 따즈아\n- 익일 상담/예정 : 0건 / 0만원\n- 모레 예정 : 0건 / 0만원\n- 따즈아(온라인) : 0건 / 0만원\n\n■ 특이사항 :",
+}
+
+def get_memo_tpl(key):
+    rows = q("SELECT text FROM memo_tpl WHERE key=?", (key,))
+    return rows[0][0] if rows else MEMO_DEFAULTS.get(key, "")
+
+def save_memo_tpl(key, text):
+    run("INSERT INTO memo_tpl(key,text,updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET text=excluded.text, updated_at=excluded.updated_at",
+        (key, text, int(time.time())))
+
+def reset_memo_tpl(key):
+    run("DELETE FROM memo_tpl WHERE key=?", (key,))
+
+def memo_fill(text, consultant):
+    """표시·복사용 치환. consultant 값이 비어 있으면 해당 플레이스홀더는 그대로 둔다 (개강안내 방식)."""
+    c = consultant or {}
+    for ph, val in (("여기에_본인_이름을_입력하세요", (c.get("name") or "").strip()),
+                    ("042-710-8921", (c.get("phone") or "").strip()),
+                    ("010-2394-6693", (c.get("mobile") or "").strip()),
+                    ("dkswo1215@koreaedugroup.com", (c.get("email") or "").strip())):
+        if val:
+            text = text.replace(ph, val)
+    return text
 
 # ── 점심값 정산 (팀 공유 · DB → GitHub 백업 동기화) ──
 def lunch_members():
@@ -1392,7 +1453,7 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "🍚 점심값 정산"]
+    PAGES = ["🏠 홈", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
     # 녹취 메모 앱은 내부망 콜 시스템에 붙어야 해서 Cloud 통합 불가 → LAN 주소로 바로가기만
@@ -1759,6 +1820,41 @@ if page == "🍚 점심값 정산":
         _nm = st.text_input("이름 (쉼표로 구분)", ", ".join(people), key="lunch_nm")
         if st.button("저장", key="lunch_nm_save"):
             set_lunch_members([x.strip() for x in _nm.split(",") if x.strip()]); st.rerun()
+    st.stop()
+
+# ── 📝 메모 양식 (카테고리별 텍스트 양식 · 담당자 자동 치환 · 팀 공유 편집) ──
+if page == "📝 메모 양식":
+    st.markdown("#### 📝 메모 양식")
+    st.caption("컨택메모·상담완료·예약·안내메세지 등 12종. 양식은 팀이 함께 편집·저장하고, "
+               "담당자 이름·전화는 **볼 때·복사할 때 자동으로** 채워집니다. 저장은 플레이스홀더가 남은 원본으로 됩니다.")
+
+    _cs = get_consultants()
+    _mc1, _mc2 = st.columns([1, 1.4])
+    _msel = _mc1.selectbox("담당자", list(range(len(_cs))),
+                           format_func=lambda i: (_cs[i]["name"] or "(이름 미입력)"), key="memo_consultant_sel")
+    _mconsult = dict(_cs[_msel])
+    if not (_mconsult.get("name") or "").strip():
+        _mc1.caption("담당자 이름이 비어 있어요 → 🗓️ 상담시간표의 ‘담당자 명단 관리’에서 채우면 여기에도 반영됩니다. "
+                     "지금은 플레이스홀더 그대로 나옵니다.")
+    _mkey = _mc2.selectbox("양식 종류", [k for k, _ in MEMO_LABELS],
+                           format_func=lambda k: dict(MEMO_LABELS)[k], key="memo_cat_sel")
+
+    _ta_key = f"memo_ta_{_mkey}"
+    _raw = st.text_area("양식 본문 (편집·저장 대상 · 플레이스홀더 유지)", value=get_memo_tpl(_mkey),
+                        height=430, key=_ta_key)
+
+    _b1, _b2, _b3 = st.columns([1, 1, 4])
+    if _b1.button("💾 양식 저장", key="memo_save", use_container_width=True):
+        save_memo_tpl(_mkey, _raw)
+        ss.pop(_ta_key, None)
+        st.success("양식 저장됨 (팀 공유)"); st.rerun()
+    if _b2.button("↩️ 기본값으로", key="memo_reset", use_container_width=True):
+        reset_memo_tpl(_mkey)
+        ss.pop(_ta_key, None)
+        st.success("기본 양식으로 되돌렸습니다"); st.rerun()
+
+    st.markdown("**📋 복사용 (담당자·전화 반영됨)** — 오른쪽 위 복사 아이콘")
+    st.code(memo_fill(_raw, _mconsult), language=None)
     st.stop()
 
 # 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
