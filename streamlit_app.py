@@ -1272,6 +1272,17 @@ with st.sidebar:
     PAGES = ["🏠 홈", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
+    # 녹취 메모 앱은 내부망 콜 시스템에 붙어야 해서 Cloud 통합 불가 → LAN 주소로 바로가기만
+    st.divider()
+    _nokchwi_url = get_state("nokchwi_url", "http://192.168.123.104:5000")
+    st.link_button("🎙️ 녹취 메모 열기", _nokchwi_url, use_container_width=True)
+    with st.expander("녹취 주소 변경"):
+        _nu = st.text_input("녹취 앱 주소 (같은 네트워크)", _nokchwi_url, key="nokchwi_url_in",
+                            help="녹취 앱(web_app.py)을 돌리는 PC 주소. 예 http://192.168.0.12:5000")
+        if _nu.strip() and _nu.strip() != _nokchwi_url and st.button("저장", key="nokchwi_url_save"):
+            set_state("nokchwi_url", _nu.strip())
+            st.rerun()
+
 # ── ✅ 체크리스트 (홈에서 분리 · fragment 인라인 체크) ────────────────
 if page == "✅ 체크리스트":
     st.markdown("#### ✅ 체크리스트")
