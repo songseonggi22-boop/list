@@ -7,8 +7,16 @@ from zoneinfo import ZoneInfo
 
 TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
 
-@st.cache_data
 def _tt_tool_html():
+    # 파일 mtime 을 캐시 키에 넣어, 재배포로 개강안내.html 이 바뀌면 콜드 재시작 없이도 새로 읽는다
+    try:
+        _m = os.path.getmtime(TT_TOOL)
+    except OSError:
+        _m = 0
+    return _tt_tool_html_cached(_m)
+
+@st.cache_data
+def _tt_tool_html_cached(_mtime):
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
