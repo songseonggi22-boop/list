@@ -12,13 +12,21 @@ def _tt_tool_html():
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
-def render_timetable_tool(hash_tab="timetable", preload=None, height=1500):
+def _consultant_inject(consultant):
+    """window.__CONSULTANT__ 주입 스크립트 조각 (개강안내.html consultantInfo() 가 읽음)."""
+    if not consultant:
+        return ""
+    js = json.dumps(consultant, ensure_ascii=False).replace("</", "<\\/")
+    return "try{window.__CONSULTANT__=" + js + ";}catch(e){}\n"
+
+def render_timetable_tool(hash_tab="timetable", preload=None, height=1500, consultant=None):
     """클로드놀이_배포판 개강안내.html 을 그대로 embed.
     hash_tab: 'timetable' | 'assign' | 'announce' | 'consult' | 'upload'
     preload: [(name, content_b64), ...] — 도구에 미리 주입(재업로드 불필요).
+    consultant: {name,phone,mobile,email,date} — 문서 서명(담당자) 값. 없으면 도구 하드코딩 fallback.
     ※ 4개 메뉴가 각각 별도 iframe이라 상태가 안 섞임 → preload(DB 저장분)로 모두 같은 시간표를 받는다."""
     html = _tt_tool_html()
-    inject = "<script>(function(){\n"
+    inject = "<script>(function(){\n" + _consultant_inject(consultant)
     if preload:
         files_js = json.dumps([{"name": n, "b64": b} for n, b in preload], ensure_ascii=False)
         inject += (
@@ -472,6 +480,13 @@ def get_db():
         content_b64 TEXT NOT NULL,
         uploaded_at INTEGER DEFAULT 0);
 
+    CREATE TABLE IF NOT EXISTS consultant(
+        name TEXT PRIMARY KEY,
+        phone TEXT DEFAULT '',
+        mobile TEXT DEFAULT '',
+        email TEXT DEFAULT '',
+        sort INTEGER DEFAULT 0);
+
     CREATE TABLE IF NOT EXISTS lunch(
         person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
         PRIMARY KEY(person, ymd));
@@ -582,6 +597,38 @@ def del_tt_upload(name):
 
 def clear_tt_uploads():
     run("DELETE FROM tt_upload")
+
+# ── 담당자(상담시간표/개강안내문/견적서 서명) 명단 · 팀 공유 ──
+_CONSULT_SEED = dict(name="", phone="042-710-8921", mobile="010-2394-6693",
+                     email="dkswo1215@koreaedugroup.com")
+
+def get_consultants():
+    rows = q("SELECT name, phone, mobile, email, sort FROM consultant ORDER BY sort, name")
+    if not rows:
+        run("INSERT INTO consultant(name,phone,mobile,email,sort) VALUES(?,?,?,?,0)",
+            (_CONSULT_SEED["name"], _CONSULT_SEED["phone"], _CONSULT_SEED["mobile"], _CONSULT_SEED["email"]))
+        rows = q("SELECT name, phone, mobile, email, sort FROM consultant ORDER BY sort, name")
+    return [dict(name=n or "", phone=p or "", mobile=m or "", email=e or "", sort=s or 0)
+            for n, p, m, e, s in rows]
+
+def save_consultants(rows):
+    """rows: list[dict] (name/phone/mobile/email). 전체 재작성 → 삭제도 반영. 이름 없으면 제외."""
+    keep, seen = [], set()
+    for r in rows:
+        nm = str(r.get("name") or "").strip()
+        if not nm or nm in seen:
+            continue
+        seen.add(nm)
+        keep.append((nm, str(r.get("phone") or "").strip(), str(r.get("mobile") or "").strip(),
+                     str(r.get("email") or "").strip(), len(keep)))
+    if not keep:  # 전부 지우면 시드 1건 유지 (문서가 빈 담당자로 나가지 않게)
+        keep = [(_CONSULT_SEED["name"], _CONSULT_SEED["phone"], _CONSULT_SEED["mobile"], _CONSULT_SEED["email"], 0)]
+    with _db_lock:
+        c = get_db()
+        c.execute("DELETE FROM consultant")
+        c.executemany("INSERT INTO consultant(name,phone,mobile,email,sort) VALUES(?,?,?,?,?)", keep)
+        c.commit()
+    backup_db_to_github()
 
 # ── 점심값 정산 (팀 공유 · DB → GitHub 백업 동기화) ──
 def lunch_members():
@@ -1743,6 +1790,27 @@ if page in _TT_MENU:
     # 임베드 도구에 넣을 파일: DB 업로드분 우선, 없으면 인트라넷 시간표/ 폴더 파일 (커밋돼 팀 공유)
     _preload = _ups or _tt_folder_b64()
 
+    # ── 담당자(문서 서명) 선택 + 명단 관리 · 팀 공유 ── (상담시간표 / 개강안내문 / 견적서에 주입)
+    _consultant = None
+    if _hash in ("consult", "announce"):
+        _cs = get_consultants()
+        _sel = st.selectbox("담당자", list(range(len(_cs))),
+                            format_func=lambda i: (_cs[i]["name"] or "(이름 미입력)"), key="tt_consultant_sel")
+        _cd = st.date_input("기준일 (상담일 / 견적서 상담 일자)", value=date.today(), key="tt_consultant_date")
+        _consultant = dict(_cs[_sel])
+        _consultant["date"] = _cd.isoformat() if _cd else ""
+        with st.expander("👤 담당자 명단 관리 (팀 공유 · DB 저장)"):
+            st.caption("이름은 직함까지 넣으세요 (예: `홍길동 교육멘토`). 저장한 담당자를 위에서 골라 "
+                       "상담시간표·개강안내문·견적서 서명에 넣습니다. 도구를 직접 열면 기존 기본값이 쓰입니다.")
+            _cdf = pd.DataFrame(_cs, columns=["name", "phone", "mobile", "email"])
+            _ced = st.data_editor(_cdf, num_rows="dynamic", use_container_width=True, hide_index=True,
+                                  key="consultant_editor",
+                                  column_config={"name": st.column_config.TextColumn("이름(직함 포함)", width="medium"),
+                                                 "phone": "유선전화", "mobile": "휴대폰", "email": "이메일"})
+            if st.button("💾 명단 저장", key="consultant_save"):
+                save_consultants(_ced.fillna("").to_dict("records"))
+                st.success("명단 저장됨 (팀 공유)"); st.rerun()
+
     _tips = {
         "timetable": "월/평일·주말 필터로 강의를 봅니다. 강의를 선택해 문서를 만들려면 **강의배정 / 개강안내문 / 상담시간표** 메뉴로 가세요.",
         "assign": "강의를 여러 개 골라 → 하단 막대 **배정 진행**.",
@@ -1754,6 +1822,8 @@ if page in _TT_MENU:
     # 전체 화면 새 탭 링크 (같은 도구 + 시간표 파일 주입) — iframe sandbox에서 인쇄/PNG 막힐 때
     import base64 as _b64m
     _full = _tt_tool_html()
+    if _consultant:
+        _full += "<script>" + _consultant_inject(_consultant) + "</script>"
     if _preload:
         _fjs = json.dumps([{"name": n, "b64": b} for n, b in _preload], ensure_ascii=False)
         _full += ("<script>(function(){var FS=" + _fjs + ";async function p(){try{"
@@ -1777,7 +1847,7 @@ if page in _TT_MENU:
 
     if _preload and not _ups:
         st.caption(f"⏳ `인트라넷 시간표/` 폴더 {len(_preload)}개 파일을 도구에 불러오는 중 — 목록이 뜨기까지 몇 초 걸릴 수 있습니다.")
-    render_timetable_tool(_hash, preload=_preload or None)
+    render_timetable_tool(_hash, preload=_preload or None, consultant=_consultant)
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
