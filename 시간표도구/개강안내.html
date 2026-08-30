@@ -1613,45 +1613,38 @@ function buildCoursePlan(selected, months){
   const monthLabels=months.map(m=>parseInt(m.slice(5),10)+'월');
   const colCount=months.length;
   const timeTdW=54; // 794px - 72px*2(padding) = 650px 기준
-  const colW=Math.floor((646-timeTdW)/Math.max(colCount,1));
-  const colGroup=`<colgroup><col style="width:${timeTdW}px">${months.map(()=>`<col style="width:${colW}px">`).join('')}</colgroup>`;
+  const monthBlockW=Math.floor((646-timeTdW)/Math.max(colCount,1));
 
-  function mergeEndKey(endDate){
-    if(!endDate)return null;
-    const[y,m]=endDate.slice(0,7).split('-').map(Number);
-    let nm=m-1,ny=y;if(nm<=0){nm=12;ny--;}
-    return`${ny}-${String(nm).padStart(2,'0')}`;
+  // ── 과목 → 격자 좌표 (행=30분 슬롯, 열=월. 같은 시간대에 겹친 과목은 그 달 열을 lane 으로 분할해 나란히) ──
+  const monthIdx=Object.fromEntries(months.map((m,i)=>[m,i]));
+  const ymOf=d=>String(d||'').slice(0,7);
+  function clampMi(ym,dflt){
+    if(monthIdx[ym]!=null) return monthIdx[ym];
+    if(!ym) return dflt;
+    return ym<months[0] ? 0 : months.length-1; // 표시 범위 밖이면 양끝으로
   }
-
-  function subjectFontSize(name){
-    return name.length<=9 ? 12 : Math.max(8, Math.round(12*9/name.length));
-  }
-  function cellInner(classes){
-    // 과목이 2개 이상 한 칸에 겹치면 폰트·행간을 줄여 넘침 방지
-    const multi=classes.length>1;
-    const subPx=n=>multi?Math.max(8,subjectFontSize(n)-1):subjectFontSize(n);
-    const metaPx=multi?9:10;
-    const lh=multi?1.4:1.7;
-    // 요일은 파싱 시 정규화된 c.day 사용 (인트라넷 원본 dayRaw 는 학기별 표기가 이어붙어 "화목화목금" 처럼 나옴)
-    return classes.map(c=>`<div style="font-weight:700;font-size:${subPx(c.subject)}px;color:#3D352D">${c.subject}</div><div style="font-size:${metaPx}px;color:#444;line-height:${lh}">${c.day||c.dayRaw||''}<br>개:${c.startDate}<br>종:${c.endDate}</div>`)
-      .join('<div style="margin:3px 0;border-top:1px dashed #ccc"></div>');
-  }
-
-  // 선택 강의가 점유하는 30분 슬롯 수집 + 최솟값 보장 (평일 12슬롯=6h, 주말 6슬롯=3h)
-  function getSlots(type){
-    const s=new Set();
+  function collect(type){
+    const list=[];
     for(const m of months)
-      for(const cls of(selected[m]?.[type]||[])){
-        const{startMin,endMin}=parseRange(cls.timeStr);
-        for(let t=startMin;t<endMin;t+=30)s.add(t);
+      for(const c of (selected[m]?.[type]||[])){
+        const{startMin,endMin}=parseRange(c.timeStr);
+        const m0=clampMi(ymOf(c.startDate),0);
+        list.push({c,startMin,endMin,m0,m1:Math.max(m0,clampMi(ymOf(c.endDate||c.startDate),months.length-1))});
       }
+    return list;
+  }
+  // 슬롯: 실제 수업 시간 그대로 + 최솟값 보장 + 각 과목 종료시각 경계 슬롯 확보(rowspan 계산용)
+  function getSlots(items,type){
+    const s=new Set();
+    for(const it of items) for(let t=it.startMin;t<it.endMin;t+=30) s.add(t);
     const minCount=type==='weekday'?8:6;
-    const MIN_T=9*60;
-    const MAX_T=type==='weekday'?22*60:18*60;
-    // 선택 강의 없으면 09:00부터 기본값으로 채움
+    const MIN_T=9*60, MAX_T=type==='weekday'?22*60:18*60;
     if(!s.size){let t=MIN_T;while(s.size<minCount&&t<MAX_T){s.add(t);t+=30;}}
+    const needEnd=items.length?Math.max(...items.map(it=>it.endMin)):0;
+    let mx=s.size?Math.max(...s):MIN_T;
+    while(mx<needEnd){mx+=30;s.add(mx);}
     let sorted=[...s].sort((a,b)=>a-b);
-    let lo=sorted[0], hi=sorted[sorted.length-1];
+    let lo=sorted[0],hi=sorted[sorted.length-1];
     while(s.size<minCount){
       if(hi+30<MAX_T){hi+=30;s.add(hi);}
       else if(lo-30>=MIN_T){lo-=30;s.add(lo);}
@@ -1659,55 +1652,99 @@ function buildCoursePlan(selected, months){
     }
     return[...s].sort((a,b)=>a-b);
   }
+  // 같은 달에서 시간대가 겹치는 과목은 서로 다른 lane 번호를 받는다
+  function assignLanes(items,slots){
+    const sIdx=v=>{const i=slots.indexOf(v);return i<0?0:i;};
+    const sEndIdx=v=>{for(let i=0;i<slots.length;i++)if(slots[i]>=v)return i;return slots.length;};
+    const metas=items.map(it=>{const s0=sIdx(it.startMin);return{...it,s0,s1:Math.max(s0+1,sEndIdx(it.endMin)),laneByM:{}};})
+      .sort((a,b)=>a.s0-b.s0||a.m0-b.m0||String(a.c.subject).localeCompare(String(b.c.subject)));
+    const laneUse={}; // mi -> [{s0,s1,lane}]
+    for(const mt of metas){
+      let pref=null;
+      for(let mi=mt.m0;mi<=mt.m1;mi++){
+        const used=new Set();
+        for(const e of (laneUse[mi]||[])) if(!(e.s1<=mt.s0||e.s0>=mt.s1)) used.add(e.lane);
+        let L;
+        if(pref!=null&&!used.has(pref)) L=pref;
+        else{L=0;while(used.has(L))L++;}
+        mt.laneByM[mi]=L;
+        (laneUse[mi]=laneUse[mi]||[]).push({s0:mt.s0,s1:mt.s1,lane:L});
+        pref=L;
+      }
+    }
+    const laneCount={};
+    for(let mi=0;mi<months.length;mi++)
+      laneCount[mi]=(laneUse[mi]||[]).reduce((a,e)=>Math.max(a,e.lane+1),0);
+    return{metas,laneCount};
+  }
 
-  // 30분 슬롯 기반 행 빌더: rowspan=시간길이/30, colspan=월병합
-  function buildSlotRows(type){
-    const slots=getSlots(type);
-    if(!slots.length)return'';
-    const slotIdx=Object.fromEntries(slots.map((v,i)=>[v,i]));
-    // occ[si][mi]: 이전 셀의 rowspan/colspan으로 이미 점유된 칸
-    const occ=Array.from({length:slots.length},()=>new Array(months.length).fill(false));
+  const wdItems=collect('weekday'), weItems=collect('weekend');
+  const wdSlots=getSlots(wdItems,'weekday'), weSlots=getSlots(weItems,'weekend');
+  const wd=assignLanes(wdItems,wdSlots), we=assignLanes(weItems,weSlots);
+  // 월별 sub-column(lane) 수 = 두 섹션 중 큰 값, 최소 1
+  const lanes=months.map((_,mi)=>Math.max(1,wd.laneCount[mi]||0,we.laneCount[mi]||0));
+  const totalSub=lanes.reduce((a,b)=>a+b,0);
+  const colStart=[]; {let acc=0;for(let mi=0;mi<months.length;mi++){colStart[mi]=acc;acc+=lanes[mi];}}
+  const colOf=(mi,lane)=>colStart[mi]+Math.min(Math.max(lane,0),lanes[mi]-1);
+
+  const colGroup=`<colgroup><col style="width:${timeTdW}px">`+
+    months.map((_,mi)=>{const w=Math.max(40,Math.floor(monthBlockW/lanes[mi]));return `<col style="width:${w}px">`.repeat(lanes[mi]);}).join('')+`</colgroup>`;
+  const monthHeads=months.map((_,mi)=>`<th class="cp-month-th" colspan="${lanes[mi]}">${monthLabels[mi]}</th>`).join('');
+
+  function subjectFontSize(name){ return name.length<=9?12:Math.max(8,Math.round(12*9/name.length)); }
+  function cellInner(c){
+    return `<div style="font-weight:700;font-size:${subjectFontSize(c.subject)}px;color:#3D352D">${c.subject}</div>`+
+      `<div style="font-size:10px;color:#444;line-height:1.6">${c.day||c.dayRaw||''}<br>개:${c.startDate}<br>종:${c.endDate}</div>`;
+  }
+  function place(occ,mt,col,colspan){
+    const nSlots=occ.length;
+    const r0=mt.s0, r1=Math.min(mt.s1,nSlots);
+    if(col<0||col>=totalSub||r0>=r1||occ[r0][col]) return;
+    const span=Math.max(1,Math.min(colspan,totalSub-col));
+    const rspan=r1-r0;
+    const attrs=(rspan>1?` rowspan="${rspan}"`:'')+(span>1?` colspan="${span}"`:'');
+    occ[r0][col]={html:`<td class="cp-cell"${attrs}>${cellInner(mt.c)}</td>`,colspan:span};
+    for(let r=r0;r<r1;r++) for(let k=0;k<span;k++){
+      if(r===r0&&k===0) continue;
+      if(col+k<totalSub) occ[r][col+k]='X';
+    }
+  }
+  function buildSection(metas,slots){
+    if(!slots.length) return '';
+    const occ=Array.from({length:slots.length},()=>new Array(totalSub).fill(null));
+    for(const mt of metas){
+      let mi=mt.m0;
+      while(mi<=mt.m1){
+        if(lanes[mi]===1){
+          // 안 겹치는 달들은 연속 구간을 가로 병합 (개강월~종강월)
+          let j=mi;
+          while(j+1<=mt.m1 && lanes[j+1]===1) j++;
+          place(occ,mt,colStart[mi],colStart[j]+lanes[j]-colStart[mi]);
+          mi=j+1;
+        } else {
+          // 겹치는 달은 그 달 열에서 lane 으로만 분할 (낱개)
+          place(occ,mt,colOf(mi,mt.laneByM[mi]||0),1);
+          mi++;
+        }
+      }
+    }
     const rows=[];
     for(let si=0;si<slots.length;si++){
-      const slotMin=slots[si];
-      const cells=[];
-      let mi=0;
-      while(mi<months.length){
-        if(occ[si][mi]){mi++;continue;}
-        const month=months[mi];
-        const courses=(selected[month]?.[type]||[]).filter(c=>parseRange(c.timeStr).startMin===slotMin);
-        if(!courses.length){cells.push(`<td class="cp-cell cp-cell-empty"></td>`);mi++;continue;}
-        // 한 칸에 겹친 과목 전체 중 가장 늦게 끝나는 시간 기준 → rowspan
-        const endMin=Math.max(...courses.map(c=>parseRange(c.timeStr).endMin));
-        let rowspan=0;
-        for(const sl of slots)if(sl>=slotMin&&sl<endMin)rowspan++;
-        rowspan=Math.max(1,rowspan);
-        // 월 병합 (종료월-1까지). 단, 한 칸에 과목이 2개 이상이면 종강월이 제각각이라 병합하지 않음
-        let colspan=1;
-        const mek=courses.length===1?mergeEndKey(courses[0].endDate):null;
-        if(mek){
-          for(let j=mi+1;j<months.length;j++){
-            if(months[j]>mek)break;
-            if((selected[months[j]]?.[type]||[]).length)break;
-            colspan++;
-          }
-        }
-        // 점유 마킹 (이후 rowspan/colspan 범위)
-        for(let r=0;r<rowspan;r++)
-          for(let c=0;c<colspan;c++)
-            if(si+r<slots.length&&mi+c<months.length)occ[si+r][mi+c]=true;
-        const attrs=(rowspan>1?` rowspan="${rowspan}"`:'')+(colspan>1?` colspan="${colspan}"`:'');
-        cells.push(`<td class="cp-cell"${attrs}>${cellInner(courses)}</td>`);
-        mi+=colspan;
+      let row=`<td class="cp-time-td">${minToStr(slots[si])}</td>`;
+      let c=0;
+      while(c<totalSub){
+        const cell=occ[si][c];
+        if(cell&&typeof cell==='object'){ row+=cell.html; c+=cell.colspan; }
+        else if(cell==='X'){ c++; }
+        else { row+=`<td class="cp-cell cp-cell-empty"></td>`; c++; }
       }
-      rows.push(`<tr><td class="cp-time-td">${minToStr(slotMin)}</td>${cells.join('')}</tr>`);
+      rows.push(`<tr>${row}</tr>`);
     }
     return rows.join('');
   }
 
-  const monthHeads=monthLabels.map(l=>`<th class="cp-month-th">${l}</th>`).join('');
-  const wdRows=buildSlotRows('weekday');
-  const weRows=buildSlotRows('weekend');
+  const wdRows=buildSection(wd.metas,wdSlots);
+  const weRows=buildSection(we.metas,weSlots);
 
   const wdSection=wdRows
     ?`<thead><tr><th class="cp-section-th">평일</th>${monthHeads}</tr></thead><tbody>${wdRows}`
