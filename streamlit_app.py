@@ -475,6 +475,9 @@ def get_db():
     CREATE TABLE IF NOT EXISTS lunch(
         person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
         PRIMARY KEY(person, ymd));
+
+    CREATE TABLE IF NOT EXISTS lunch_day(
+        ymd TEXT PRIMARY KEY, total INTEGER DEFAULT 0, paid INTEGER DEFAULT 0);
     """)
     c.commit()
     # 조직 개편: 2-3팀 → 2-2팀 (2026-08). 기존 행/GitHub 백업 DB에도 반영 (idempotent)
@@ -594,6 +597,23 @@ def save_lunch(person, ymd, amount):
 def lunch_month_totals(ym):  # 'YYYY-MM' → {day(int): 합계}
     rows = q("SELECT ymd, SUM(amount) FROM lunch WHERE ymd LIKE ? GROUP BY ymd", (ym + "-%",))
     return {int(y[8:10]): int(t or 0) for y, t in rows}
+
+# ── 날짜별 실제 결제금액 + 냈음 (사람별 금액과 별개로 직접 입력) ──
+def get_lunch_days(monday_iso):  # 그 주 7일 → {ymd: {"total": int, "paid": bool}}
+    d0 = date.fromisoformat(monday_iso)
+    days = [(d0 + timedelta(days=i)).isoformat() for i in range(7)]
+    rows = q("SELECT ymd, total, paid FROM lunch_day WHERE ymd BETWEEN ? AND ?", (days[0], days[6]))
+    m = {y: {"total": int(t or 0), "paid": bool(p)} for y, t, p in rows}
+    return {dy: m.get(dy, {"total": 0, "paid": False}) for dy in days}
+
+def save_lunch_day(ymd, total, paid):
+    run("INSERT INTO lunch_day(ymd,total,paid) VALUES(?,?,?) "
+        "ON CONFLICT(ymd) DO UPDATE SET total=excluded.total, paid=excluded.paid",
+        (ymd, int(total), 1 if paid else 0))
+
+def lunch_month_days(ym):  # 'YYYY-MM' → {day(int): {"total": int, "paid": bool}}
+    rows = q("SELECT ymd, total, paid FROM lunch_day WHERE ymd LIKE ?", (ym + "-%",))
+    return {int(y[8:10]): {"total": int(t or 0), "paid": bool(p)} for y, t, p in rows}
 
 def get_team_members():
     try:
@@ -1418,28 +1438,39 @@ if page == "🍚 점심값 정산":
         ss.lunch_wk = (mon + timedelta(days=7)).isoformat(); st.rerun()
 
     days, data = get_lunch_week(ss.lunch_wk, people)
+    dinfo = get_lunch_days(ss.lunch_wk)
 
     # ── 장부 (엑셀처럼 칸에 바로 입력) ──
     ledger = pd.DataFrame({"날짜": [f"{date.fromisoformat(dy).month}/{date.fromisoformat(dy).day} ({dn})"
                                    for dy, dn in zip(days, DOW)]})
     for p in people:
         ledger[p] = [int(data[p][i]) for i in range(7)]
+    ledger["그날 총액"] = [int(dinfo[dy]["total"]) for dy in days]
+    ledger["냈음"] = [bool(dinfo[dy]["paid"]) for dy in days]
     edited = st.data_editor(
         ledger, key="lunch_editor", hide_index=True, use_container_width=True, num_rows="fixed",
         disabled=["날짜"],
         column_config={
             "날짜": st.column_config.TextColumn("날짜", width="small", disabled=True),
             **{p: st.column_config.NumberColumn(f"{p} (원)", min_value=0, step=500, format="%d") for p in people},
+            "그날 총액": st.column_config.NumberColumn("그날 총액(원)", min_value=0, step=1000, format="%d",
+                                                  help="그날 식당에서 실제 결제한 금액 — 사람별 합계와 별개로 직접 입력"),
+            "냈음": st.column_config.CheckboxColumn("냈음", help="그날 점심값을 냈는지 (날짜별 1개)"),
         },
     )
     cur = {p: [int(edited[p].iloc[i]) if pd.notna(edited[p].iloc[i]) else 0 for i in range(7)] for p in people}
-    dirty = any(cur[p][i] != data[p][i] for p in people for i in range(7))
+    cur_total = [int(edited["그날 총액"].iloc[i]) if pd.notna(edited["그날 총액"].iloc[i]) else 0 for i in range(7)]
+    cur_paid = [bool(edited["냈음"].iloc[i]) for i in range(7)]
+    dirty = any(cur[p][i] != data[p][i] for p in people for i in range(7)) or \
+            any(cur_total[i] != dinfo[days[i]]["total"] or cur_paid[i] != dinfo[days[i]]["paid"] for i in range(7))
 
     sc = st.columns([1, 1, 3])
     if sc[0].button("💾 저장", type="primary", use_container_width=True, disabled=not dirty):
         for p in people:
             for dy, v in zip(days, cur[p]):
                 save_lunch(p, dy, v)
+        for i, dy in enumerate(days):
+            save_lunch_day(dy, cur_total[i], cur_paid[i])
         st.toast("저장됐어요"); st.rerun()
     if sc[1].button("↩ 되돌리기", use_container_width=True, disabled=not dirty):
         st.rerun()
@@ -1452,11 +1483,19 @@ if page == "🍚 점심값 정산":
     grand = sum(totals.values())
     n = max(len(people), 1)
     share = grand // n
+    paid_sum = sum(cur_total)                                   # 직접 입력한 그날 총액의 주간 합
+    unpaid_days = sum(1 for i in range(7) if (cur_total[i] or daily[i]) and not cur_paid[i])
 
     foot = "<table style='width:100%;border-collapse:collapse;font-size:13px;margin-top:6px'>"
-    foot += "<tr style='background:var(--color-selected)'><th style='text-align:left;padding:7px 10px'>요일별 합계</th>"
-    for i, dn in enumerate(DOW):
+    foot += "<tr style='background:var(--color-selected)'><th style='text-align:left;padding:7px 10px'>사람별 합계</th>"
+    for i in range(7):
         foot += f"<td style='text-align:right;padding:7px 8px;color:var(--color-text-secondary)'>{daily[i]:,}</td>"
+    foot += "</tr>"
+    foot += "<tr><th style='text-align:left;padding:7px 10px'>그날 결제액</th>"
+    for i in range(7):
+        mark = ("<span style='color:var(--color-success)'> ✓</span>" if cur_paid[i]
+                else "<span style='color:var(--color-urgent)'> 미납</span>" if (cur_total[i] or daily[i]) else "")
+        foot += f"<td style='text-align:right;padding:7px 8px;color:var(--color-text-secondary)'>{cur_total[i]:,}{mark}</td>"
     foot += "</tr></table>"
     st.markdown(foot, unsafe_allow_html=True)
 
@@ -1466,6 +1505,13 @@ if page == "🍚 점심값 정산":
     for i, p in enumerate(people):
         cards[i].metric(f"{p} 낸 돈", f"{totals[p]:,}원")
     cards[-1].metric("총 점심값", f"{grand:,}원", help=f"÷{n} = 1인당 {share:,}원")
+
+    mc = st.columns(3)
+    mc[0].metric("이번 주 실제 결제 합계", f"{paid_sum:,}원", help="장부에 직접 입력한 '그날 총액'의 주간 합")
+    mc[1].metric("미납 일수", f"{unpaid_days}일")
+    if paid_sum and paid_sum != grand:
+        mc[2].metric("사람별 합계와 차이", f"{paid_sum - grand:+,}원",
+                     help=f"사람별 합계 {grand:,}원 · 실제 결제 {paid_sum:,}원")
 
     split_mode = st.radio("정산 방식", ["n빵 (총액 ÷ 인원)", "각자 자기 것만"], horizontal=True, key="lunch_mode")
 
@@ -1513,11 +1559,19 @@ if page == "🍚 점심값 정산":
                              (f"+{bal:,}원 받음" if bal > 0 else (f"-{-bal:,}원 냄" if bal < 0 else "정산완료")))
         else:
             lines.append("각자 입금: " + " / ".join(f"{p} {totals[p]:,}원" for p in people))
+        if paid_sum:
+            diff = paid_sum - grand
+            lines.append("")
+            lines.append(f"실제 결제 총액: {paid_sum:,}원" + ("" if diff == 0 else f" (사람별 합계와 {diff:+,}원)"))
+            if unpaid_days:
+                lines.append(f"미납: {unpaid_days}일")
         st.code("\n".join(lines), language=None)
 
     # ── 월 달력 ──
     with st.expander(f"📅 {mon.year}년 {mon.month}월 — 날짜별 점심값"):
-        mt = lunch_month_totals(f"{mon.year:04d}-{mon.month:02d}")
+        _ym = f"{mon.year:04d}-{mon.month:02d}"
+        mt = lunch_month_totals(_ym)
+        md_ = lunch_month_days(_ym)
         head = "".join(f"<th style='padding:5px;font-size:11px;color:var(--color-muted);font-weight:500'>{d}</th>" for d in DOW)
         body = ""
         for wk in cal_lib.monthcalendar(mon.year, mon.month):
@@ -1526,9 +1580,13 @@ if page == "🍚 점심값 정산":
                 if dd == 0:
                     body += "<td style='border:1px solid var(--color-border);height:58px;background:var(--color-bg)'></td>"
                 else:
-                    amt = mt.get(dd, 0)
+                    di = md_.get(dd) or {}
+                    amt = di.get("total") or mt.get(dd, 0)
+                    paid = di.get("paid", False)
+                    col = "var(--color-success)" if paid else "var(--color-primary)"
+                    chk = "<span style='color:var(--color-success)'> ✓</span>" if paid else ""
                     inr = (f"<span style='font-size:10px;color:var(--color-muted)'>{dd}</span>"
-                           + (f"<div style='color:var(--color-primary);font-weight:700;font-size:12px;margin-top:4px'>{amt:,}</div>" if amt else ""))
+                           + (f"<div style='color:{col};font-weight:700;font-size:12px;margin-top:4px'>{amt:,}{chk}</div>" if amt else ""))
                     body += f"<td style='border:1px solid var(--color-border);height:58px;padding:5px;vertical-align:top'>{inr}</td>"
             body += "</tr>"
         st.markdown(f"<table style='border-collapse:collapse;width:100%;table-layout:fixed'><tr>{head}</tr>{body}</table>",
