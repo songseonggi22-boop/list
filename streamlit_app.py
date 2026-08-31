@@ -500,6 +500,15 @@ def get_db():
         text TEXT NOT NULL,
         updated_at INTEGER DEFAULT 0);
 
+    CREATE TABLE IF NOT EXISTS notice(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT DEFAULT '',
+        body TEXT DEFAULT '',
+        author TEXT DEFAULT '',
+        pinned INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT 0,
+        updated_at INTEGER DEFAULT 0);
+
     CREATE TABLE IF NOT EXISTS lunch(
         person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
         PRIMARY KEY(person, ymd));
@@ -698,6 +707,36 @@ def memo_fill(text, consultant):
         if val:
             text = text.replace(ph, val)
     return text
+
+# ── 공지사항 (팀 공유 게시판 · DB → GitHub 백업 동기화) ──
+def get_notices():
+    rows = q("SELECT id, title, body, author, pinned, created_at, updated_at FROM notice "
+             "ORDER BY pinned DESC, COALESCE(NULLIF(updated_at,0), created_at) DESC, id DESC")
+    return [dict(id=i, title=t or "", body=b or "", author=a or "", pinned=int(p or 0),
+                 created_at=int(c or 0), updated_at=int(u or 0))
+            for i, t, b, a, p, c, u in rows]
+
+def add_notice(title, body, author, pinned):
+    now = int(time.time() * 1000)
+    run("INSERT INTO notice(title,body,author,pinned,created_at,updated_at) VALUES(?,?,?,?,?,0)",
+        (title.strip(), body.rstrip(), (author or "").strip(), int(bool(pinned)), now))
+
+def update_notice(nid, title, body, pinned):
+    run("UPDATE notice SET title=?, body=?, pinned=?, updated_at=? WHERE id=?",
+        (title.strip(), body.rstrip(), int(bool(pinned)), int(time.time() * 1000), nid))
+
+def del_notice(nid):
+    run("DELETE FROM notice WHERE id=?", (nid,))
+
+def toggle_notice_pin(nid):
+    run("UPDATE notice SET pinned = 1 - COALESCE(pinned,0) WHERE id=?", (nid,))
+
+def notice_ts_label(n):
+    ts = n["updated_at"] or n["created_at"]
+    if not ts:
+        return ""
+    tag = " (수정)" if n["updated_at"] else ""
+    return datetime.fromtimestamp(ts / 1000, KST).strftime("%Y-%m-%d %H:%M") + tag
 
 # ── 점심값 정산 (팀 공유 · DB → GitHub 백업 동기화) ──
 def lunch_members():
@@ -1453,7 +1492,7 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
+    PAGES = ["🏠 홈", "📢 공지사항", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
     # 녹취 메모 앱은 내부망 콜 시스템에 붙어야 해서 Cloud 통합 불가 → LAN 주소로 바로가기만
@@ -1870,6 +1909,67 @@ if page == "📝 메모 양식":
             if hc[1].button("✕ 닫기", key="memo_close", use_container_width=True):
                 ss.pop("memo_open", None); st.rerun()
             _memo_body(_ok, _mconsult)
+    st.stop()
+
+# ── 📢 공지사항 (팀 공유 게시판 · 고정/수정/삭제) ──────────────────────
+if page == "📢 공지사항":
+    st.subheader("📢 공지사항")
+    st.caption("팀 전체 공유 게시판 — 여기에 적으면 팀원 모두가 봅니다. 본문은 마크다운(줄바꿈·`-` 목록·`**굵게**`)이 적용됩니다.")
+
+    _notices = get_notices()
+    _members = get_team_members()
+
+    with st.expander("✏️ 새 공지 작성", expanded=not _notices):
+        with st.form("notice_add", clear_on_submit=True):
+            _nt = st.text_input("제목", key="nt_title")
+            _nb = st.text_area("본문 (마크다운 지원)", height=180, key="nt_body")
+            fc = st.columns([2, 1])
+            _na = (fc[0].selectbox("작성자", _members, key="nt_author") if _members
+                   else fc[0].text_input("작성자", key="nt_author_free"))
+            _np = fc[1].checkbox("📌 상단 고정", key="nt_pin")
+            if st.form_submit_button("등록", use_container_width=True):
+                if _nt.strip() or _nb.strip():
+                    add_notice(_nt, _nb, _na or "", _np)
+                    st.toast("공지 등록됨 (팀 공유)")
+                    st.rerun()
+                else:
+                    st.warning("제목이나 본문을 입력하세요.")
+
+    if not _notices:
+        st.info("아직 등록된 공지가 없습니다. 위 ‘새 공지 작성’으로 첫 공지를 남겨보세요.")
+
+    for n in _notices:
+        with st.container(border=True):
+            if ss.get("notice_edit") == n["id"]:
+                # ── 인라인 수정 폼 ──
+                with st.form(f"notice_edit_{n['id']}"):
+                    et = st.text_input("제목", value=n["title"], key=f"net_{n['id']}")
+                    eb = st.text_area("본문 (마크다운 지원)", value=n["body"], height=180, key=f"neb_{n['id']}")
+                    ep = st.checkbox("📌 상단 고정", value=bool(n["pinned"]), key=f"nep_{n['id']}")
+                    sc = st.columns(2)
+                    if sc[0].form_submit_button("저장", use_container_width=True):
+                        update_notice(n["id"], et, eb, ep)
+                        ss.pop("notice_edit", None); st.toast("수정됨"); st.rerun()
+                    if sc[1].form_submit_button("취소", use_container_width=True):
+                        ss.pop("notice_edit", None); st.rerun()
+            else:
+                _pin = "📌 " if n["pinned"] else ""
+                _meta = " · ".join(x for x in (n["author"], notice_ts_label(n)) if x)
+                st.markdown(
+                    f"<div style='font-size:15px;font-weight:700;color:var(--color-text)'>{_pin}{(n['title'] or '(제목 없음)')}</div>"
+                    f"<div style='font-size:12px;color:var(--color-text-secondary);margin:2px 0 8px'>{_meta}</div>",
+                    unsafe_allow_html=True)
+                st.markdown(n["body"] or "_(내용 없음)_")
+                bc = st.columns([1, 1, 1, 5])
+                if bc[0].button("📌 고정 해제" if n["pinned"] else "📌 고정", key=f"npin_{n['id']}"):
+                    toggle_notice_pin(n["id"]); st.rerun()
+                if bc[1].button("✏️ 수정", key=f"nedit_{n['id']}"):
+                    ss["notice_edit"] = n["id"]; st.rerun()
+                if bc[2].button("🗑️ 삭제", key=f"ndel_{n['id']}"):
+                    del_notice(n["id"])
+                    if ss.get("notice_edit") == n["id"]:
+                        ss.pop("notice_edit", None)
+                    st.toast("삭제됨"); st.rerun()
     st.stop()
 
 # 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
