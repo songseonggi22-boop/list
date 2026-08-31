@@ -8,15 +8,8 @@ from zoneinfo import ZoneInfo
 TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
 
 def _tt_tool_html():
-    # 파일 mtime 을 캐시 키에 넣어, 재배포로 개강안내.html 이 바뀌면 콜드 재시작 없이도 새로 읽는다
-    try:
-        _m = os.path.getmtime(TT_TOOL)
-    except OSError:
-        _m = 0
-    return _tt_tool_html_cached(_m)
-
-@st.cache_data
-def _tt_tool_html_cached(_mtime):
+    # 캐시 없이 매 렌더마다 읽는다. (mtime 캐시 키가 Cloud 재배포에서 무효화 안 돼 stale HTML 이 임베드되던 사고 방지.
+    #  파일 ~200KB, 시간표 페이지 볼 때만 읽으므로 비용 무시 가능.)
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
@@ -120,9 +113,10 @@ def _parse_cell(text, room, time_label):
                 cap=int(m.group("cap")), enrolled=int(m.group("enrolled")),
                 assigned=int(m.group("assigned")), start_time=time_label)
 
-@st.cache_data
 def _tt_folder_b64():
-    """`인트라넷 시간표/` 폴더의 xls 를 (name, base64) 로. 임베드 도구 preload 폴백용 (저장소에 커밋돼 팀원 모두 동일)."""
+    """`인트라넷 시간표/` 폴더의 xls 를 (name, base64) 로. 임베드 도구 preload 폴백용 (저장소에 커밋돼 팀원 모두 동일).
+    캐시 안 함 — 재배포로 폴더 내용이 바뀌면 mtime 캐시 키가 Cloud 에서 무효화 안 될 수 있어 (개강안내.html stale 사고와 동일 위험).
+    시간표 페이지에서만 호출, 파일 ~1.5MB 라 매 렌더 읽어도 비용 무시 가능."""
     import base64
     out = []
     for p in sorted(glob.glob(os.path.join(TT_DIR, "*.xls"))):
@@ -363,6 +357,14 @@ def _expand_fee_name(name):
         out.extend(p + suffix for p in parts)
     return out
 
+def _fees_sig():
+    """수강료.xlsx 내용 해시 — 캐시 키. (mtime 은 Cloud 재배포에서 안 바뀔 수 있어 파일 내용으로.)"""
+    try:
+        with open(FEE_FILE, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except OSError:
+        return ""
+
 @st.cache_data
 def _load_fees(_cache_key):
     fees = {}
@@ -378,7 +380,7 @@ def _load_fees(_cache_key):
 def lookup_fee(subject, weekend=False):
     if not os.path.exists(FEE_FILE):
         return None
-    fees = _load_fees(os.path.getmtime(FEE_FILE))
+    fees = _load_fees(_fees_sig())
     s = subject.strip()
     if s in fees:
         return fees[s]
