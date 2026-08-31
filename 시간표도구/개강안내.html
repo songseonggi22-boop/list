@@ -1642,12 +1642,12 @@ function buildCoursePlan(selected, months){
     return ym<months[0] ? 0 : months.length-1; // 표시 범위 밖이면 양끝으로
   }
   function collect(type){
+    // 과목 1개 = 박스 1개, 개강월(startDate의 달) 칸에만 배치. 종강월까지 가로로 늘리지 않는다.
     const list=[];
     for(const m of months)
       for(const c of (selected[m]?.[type]||[])){
         const{startMin,endMin}=parseRange(c.timeStr);
-        const m0=clampMi(ymOf(c.startDate),0);
-        list.push({c,startMin,endMin,m0,m1:Math.max(m0,clampMi(ymOf(c.endDate||c.startDate),months.length-1))});
+        list.push({c,startMin,endMin,m0:clampMi(ymOf(c.startDate),0)});
       }
     return list;
   }
@@ -1670,25 +1670,19 @@ function buildCoursePlan(selected, months){
     }
     return[...s].sort((a,b)=>a-b);
   }
-  // 같은 달에서 시간대가 겹치는 과목은 서로 다른 lane 번호를 받는다
+  // lane 분할은 "같은 개강월 칸 + 시간대 겹침" 일 때만. 개강월이 다르면 각자 자기 달 칸에 (분할 없음).
   function assignLanes(items,slots){
     const sIdx=v=>{const i=slots.indexOf(v);return i<0?0:i;};
     const sEndIdx=v=>{for(let i=0;i<slots.length;i++)if(slots[i]>=v)return i;return slots.length;};
-    const metas=items.map(it=>{const s0=sIdx(it.startMin);return{...it,s0,s1:Math.max(s0+1,sEndIdx(it.endMin)),laneByM:{}};})
-      .sort((a,b)=>a.s0-b.s0||a.m0-b.m0||String(a.c.subject).localeCompare(String(b.c.subject)));
-    const laneUse={}; // mi -> [{s0,s1,lane}]
+    const metas=items.map(it=>{const s0=sIdx(it.startMin);return{...it,s0,s1:Math.max(s0+1,sEndIdx(it.endMin)),lane:0};})
+      .sort((a,b)=>a.m0-b.m0||a.s0-b.s0||String(a.c.subject).localeCompare(String(b.c.subject)));
+    const laneUse={}; // m0 -> [{s0,s1,lane}]
     for(const mt of metas){
-      let pref=null;
-      for(let mi=mt.m0;mi<=mt.m1;mi++){
-        const used=new Set();
-        for(const e of (laneUse[mi]||[])) if(!(e.s1<=mt.s0||e.s0>=mt.s1)) used.add(e.lane);
-        let L;
-        if(pref!=null&&!used.has(pref)) L=pref;
-        else{L=0;while(used.has(L))L++;}
-        mt.laneByM[mi]=L;
-        (laneUse[mi]=laneUse[mi]||[]).push({s0:mt.s0,s1:mt.s1,lane:L});
-        pref=L;
-      }
+      const used=new Set();
+      for(const e of (laneUse[mt.m0]||[])) if(!(e.s1<=mt.s0||e.s0>=mt.s1)) used.add(e.lane);
+      let L=0; while(used.has(L)) L++;
+      mt.lane=L;
+      (laneUse[mt.m0]=laneUse[mt.m0]||[]).push({s0:mt.s0,s1:mt.s1,lane:L});
     }
     const laneCount={};
     for(let mi=0;mi<months.length;mi++)
@@ -1709,10 +1703,23 @@ function buildCoursePlan(selected, months){
     months.map((_,mi)=>{const w=Math.max(40,Math.floor(monthBlockW/lanes[mi]));return `<col style="width:${w}px">`.repeat(lanes[mi]);}).join('')+`</colgroup>`;
   const monthHeads=months.map((_,mi)=>`<th class="cp-month-th" colspan="${lanes[mi]}">${monthLabels[mi]}</th>`).join('');
 
-  function subjectFontSize(name){ return name.length<=9?12:Math.max(8,Math.round(12*9/name.length)); }
+  function subjectFontSize(name){ return name.length<=8?12:Math.max(8,Math.round(12*8/name.length)); }
+  function fmtMD(iso){ const m=/^\d{4}-(\d{1,2})-(\d{1,2})/.exec(String(iso||'')); return m?`${+m[1]}/${+m[2]}`:''; }
+  function compactDay(c){
+    // "월/수/금 (주 2,3일)" → "월·수·금" (부가표기 제거)
+    return String(c.day||c.dayRaw||'').replace(/\s*\([^)]*\)\s*/g,'').replace(/[\/,]\s*/g,'·').trim();
+  }
+  // 칸 안에 딱 들어가는 3줄 압축 박스: 과목명 / 요일 / 개강일(~종강일 작게). overflow:hidden 으로 세로 늘어짐 방지.
   function cellInner(c){
-    return `<div style="font-weight:700;font-size:${subjectFontSize(c.subject)}px;color:#3D352D">${c.subject}</div>`+
-      `<div style="font-size:10px;color:#444;line-height:1.6">${c.day||c.dayRaw||''}<br>개:${c.startDate}<br>종:${c.endDate}</div>`;
+    const fs=Math.min(12,subjectFontSize(c.subject));
+    const s=fmtMD(c.startDate), e=fmtMD(c.endDate);
+    const dline = s ? `${s} 개강${e?`<span style="opacity:.5"> ~ ${e}</span>`:''}` : '';
+    const dow = compactDay(c);
+    return `<div style="overflow:hidden;line-height:1.25;word-break:keep-all">`
+      +`<div style="font-weight:700;font-size:${fs}px;color:#3D352D">${c.subject}</div>`
+      +(dow?`<div style="font-size:9px;color:#555">${dow}</div>`:'')
+      +(dline?`<div style="font-size:9px;color:#555">${dline}</div>`:'')
+      +`</div>`;
   }
   function place(occ,mt,col,colspan){
     const nSlots=occ.length;
@@ -1730,22 +1737,8 @@ function buildCoursePlan(selected, months){
   function buildSection(metas,slots){
     if(!slots.length) return '';
     const occ=Array.from({length:slots.length},()=>new Array(totalSub).fill(null));
-    for(const mt of metas){
-      let mi=mt.m0;
-      while(mi<=mt.m1){
-        if(lanes[mi]===1){
-          // 안 겹치는 달들은 연속 구간을 가로 병합 (개강월~종강월)
-          let j=mi;
-          while(j+1<=mt.m1 && lanes[j+1]===1) j++;
-          place(occ,mt,colStart[mi],colStart[j]+lanes[j]-colStart[mi]);
-          mi=j+1;
-        } else {
-          // 겹치는 달은 그 달 열에서 lane 으로만 분할 (낱개)
-          place(occ,mt,colOf(mi,mt.laneByM[mi]||0),1);
-          mi++;
-        }
-      }
-    }
+    // 각 과목 = 개강월 칸(같은 시간대 겹치면 lane) 에 박스 1개, rowspan=수업시간. 가로 확장 없음.
+    for(const mt of metas) place(occ,mt,colOf(mt.m0,mt.lane||0),1);
     const rows=[];
     for(let si=0;si<slots.length;si++){
       let row=`<td class="cp-time-td">${minToStr(slots[si])}</td>`;
