@@ -1079,7 +1079,10 @@ if "notice_out" not in ss: ss.notice_out = ""
 now_kst   = datetime.now(KST)
 today     = now_kst.date()
 today_str = today.isoformat()
-yr, mo    = today.year, today.month
+# 홈 캘린더가 보는 달 (◀▶·오늘 로 이동) — 하드코딩 대신 session_state
+if "cal_ym" not in ss:
+    ss.cal_ym = (today.year, today.month)
+yr, mo    = ss.cal_ym
 
 # 한국시간 06:00 기준으로 하루 업무일 판단 → 새 업무일이면 체크 초기화
 workday = (today - timedelta(days=1)).isoformat() if now_kst.hour < 6 else today_str
@@ -2195,7 +2198,7 @@ with left:
         for wi, day in enumerate(week):
             if day == 0:
                 rows_html += '<div class="cal-day" style="background:#F1F4F6"></div>'; continue
-            is_td   = day == today.day
+            is_td   = (yr, mo) == (today.year, today.month) and day == today.day
             td_cls  = " td" if is_td else ""
             nc      = "td" if is_td else ""
             dc      = day_clr[wi]
@@ -2211,11 +2214,28 @@ with left:
   {evhtml}
 </div>"""
 
+    # ── 월 이동 네비 (◀ / 년월 / ▶ / 오늘) ──
+    _nav = st.columns([1, 2.5, 1, 1])
+    if _nav[0].button("◀", key="cal_prev", use_container_width=True, help="이전 달"):
+        _y, _m = ss.cal_ym
+        ss.cal_ym = (_y - 1, 12) if _m == 1 else (_y, _m - 1)
+        st.rerun()
+    _nav[1].markdown(
+        f"<div style='text-align:center;font-weight:700;font-size:14px;padding-top:7px;color:var(--color-text)'>{yr}년 {mo}월</div>",
+        unsafe_allow_html=True)
+    if _nav[2].button("▶", key="cal_next", use_container_width=True, help="다음 달"):
+        _y, _m = ss.cal_ym
+        ss.cal_ym = (_y + 1, 1) if _m == 12 else (_y, _m + 1)
+        st.rerun()
+    if _nav[3].button("오늘", key="cal_today", use_container_width=True):
+        ss.cal_ym = (today.year, today.month)
+        st.rerun()
+
     st.markdown(f"""
 <div class="db-card">
   <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:14px'>
     <div class="db-card-title" style="margin:0">🗓️ 캘린더 일정</div>
-    <div style='font-size:13px;font-weight:600;color:var(--color-text-secondary)'>{yr}년 {mo}월</div>
+    <div style='font-size:12px;font-weight:600;color:var(--color-muted)'>{'' if (yr, mo) == (today.year, today.month) else '다른 달 보는 중'}</div>
   </div>
   <div class="cal-grid">
     <div class="cal-head">월</div><div class="cal-head">화</div>
@@ -2232,7 +2252,8 @@ with left:
         with st.form("cf", clear_on_submit=True):
             r1 = st.columns(2)
             cname = r1[0].text_input("이름 *")
-            cdate = r1[1].date_input("날짜", value=today)
+            _cdate_def = today if (yr, mo) == (today.year, today.month) else date(yr, mo, 1)
+            cdate = r1[1].date_input("날짜", value=_cdate_def)
             r2 = st.columns([1, 1, 1])
             ctime  = r2[0].text_input("시간", placeholder="14:00")
             crev   = money_input("예정매출(원)", 0, "cf_crev", r2[1])
@@ -2240,7 +2261,9 @@ with left:
             cvisit = st.radio("방문 유형", ["신규방문", "재방문", "온라인"], horizontal=True)
             cassignee = st.text_input("담당자", placeholder="담당자")
             if st.form_submit_button("저장", use_container_width=True) and cname.strip():
-                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype, cassignee.strip(), cvisit); st.rerun()
+                add_consult(cname.strip(), cdate.isoformat(), ctime, int(crev), ctype, cassignee.strip(), cvisit)
+                ss.cal_ym = (cdate.year, cdate.month)   # 저장한 상담의 달로 캘린더 이동
+                st.rerun()
 
 # ── RIGHT: 상담 일정(날짜별) + 칸반 TO DO LIST ──────────────────
 with right:
