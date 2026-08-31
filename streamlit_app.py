@@ -507,7 +507,15 @@ def get_db():
         author TEXT DEFAULT '',
         pinned INTEGER DEFAULT 0,
         created_at INTEGER DEFAULT 0,
-        updated_at INTEGER DEFAULT 0);
+        updated_at INTEGER DEFAULT 0,
+        done INTEGER DEFAULT 0);
+
+    CREATE TABLE IF NOT EXISTS notice_comment(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notice_id INTEGER,
+        author TEXT DEFAULT '',
+        body TEXT DEFAULT '',
+        created_at INTEGER DEFAULT 0);
 
     CREATE TABLE IF NOT EXISTS lunch(
         person TEXT, ymd TEXT, amount INTEGER DEFAULT 0,
@@ -533,6 +541,11 @@ def get_db():
         c.commit()
     except sqlite3.OperationalError:
         pass  # 이미 있음
+    try:
+        c.execute("ALTER TABLE notice ADD COLUMN done INTEGER DEFAULT 0")
+        c.commit()
+    except sqlite3.OperationalError:
+        pass  # 이미 있음 (기존 notice 행 보존)
     try:
         c.execute("ALTER TABLE tasks ADD COLUMN assignee TEXT DEFAULT ''")
         c.commit()
@@ -708,17 +721,18 @@ def memo_fill(text, consultant):
             text = text.replace(ph, val)
     return text
 
-# ── 공지사항 (팀 공유 게시판 · DB → GitHub 백업 동기화) ──
+# ── 할 일 공유 메모 (자유 메모 + 완료 체크 + 댓글 · 팀 공유 · DB → GitHub 백업) ──
 def get_notices():
-    rows = q("SELECT id, title, body, author, pinned, created_at, updated_at FROM notice "
+    rows = q("SELECT id, title, body, author, pinned, created_at, updated_at, "
+             "COALESCE(done,0) FROM notice "
              "ORDER BY pinned DESC, COALESCE(NULLIF(updated_at,0), created_at) DESC, id DESC")
     return [dict(id=i, title=t or "", body=b or "", author=a or "", pinned=int(p or 0),
-                 created_at=int(c or 0), updated_at=int(u or 0))
-            for i, t, b, a, p, c, u in rows]
+                 created_at=int(c or 0), updated_at=int(u or 0), done=int(d or 0))
+            for i, t, b, a, p, c, u, d in rows]
 
 def add_notice(title, body, author, pinned):
     now = int(time.time() * 1000)
-    run("INSERT INTO notice(title,body,author,pinned,created_at,updated_at) VALUES(?,?,?,?,?,0)",
+    run("INSERT INTO notice(title,body,author,pinned,created_at,updated_at,done) VALUES(?,?,?,?,?,0,0)",
         (title.strip(), body.rstrip(), (author or "").strip(), int(bool(pinned)), now))
 
 def update_notice(nid, title, body, pinned):
@@ -726,10 +740,14 @@ def update_notice(nid, title, body, pinned):
         (title.strip(), body.rstrip(), int(bool(pinned)), int(time.time() * 1000), nid))
 
 def del_notice(nid):
+    run("DELETE FROM notice_comment WHERE notice_id=?", (nid,))
     run("DELETE FROM notice WHERE id=?", (nid,))
 
 def toggle_notice_pin(nid):
     run("UPDATE notice SET pinned = 1 - COALESCE(pinned,0) WHERE id=?", (nid,))
+
+def toggle_notice_done(nid):
+    run("UPDATE notice SET done = 1 - COALESCE(done,0) WHERE id=?", (nid,))
 
 def notice_ts_label(n):
     ts = n["updated_at"] or n["created_at"]
@@ -737,6 +755,23 @@ def notice_ts_label(n):
         return ""
     tag = " (수정)" if n["updated_at"] else ""
     return datetime.fromtimestamp(ts / 1000, KST).strftime("%Y-%m-%d %H:%M") + tag
+
+def get_comments(notice_id):
+    rows = q("SELECT id, author, body, created_at FROM notice_comment "
+             "WHERE notice_id=? ORDER BY created_at, id", (notice_id,))
+    return [dict(id=i, author=a or "", body=b or "", created_at=int(c or 0))
+            for i, a, b, c in rows]
+
+def add_comment(notice_id, author, body):
+    run("INSERT INTO notice_comment(notice_id,author,body,created_at) VALUES(?,?,?,?)",
+        (notice_id, (author or "").strip(), body.strip(), int(time.time() * 1000)))
+
+def del_comment(cid):
+    run("DELETE FROM notice_comment WHERE id=?", (cid,))
+
+def comment_ts_label(c):
+    ts = c["created_at"]
+    return datetime.fromtimestamp(ts / 1000, KST).strftime("%m-%d %H:%M") if ts else ""
 
 # ── 점심값 정산 (팀 공유 · DB → GitHub 백업 동기화) ──
 def lunch_members():
@@ -1492,7 +1527,7 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📢 공지사항", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
+    PAGES = ["🏠 홈", "📋 할 일 공유", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
     # 녹취 메모 앱은 내부망 콜 시스템에 붙어야 해서 Cloud 통합 불가 → LAN 주소로 바로가기만
@@ -1911,40 +1946,44 @@ if page == "📝 메모 양식":
             _memo_body(_ok, _mconsult)
     st.stop()
 
-# ── 📢 공지사항 (팀 공유 게시판 · 고정/수정/삭제) ──────────────────────
-if page == "📢 공지사항":
-    st.subheader("📢 공지사항")
-    st.caption("팀 전체 공유 게시판 — 여기에 적으면 팀원 모두가 봅니다. 본문은 마크다운(줄바꿈·`-` 목록·`**굵게**`)이 적용됩니다.")
+# ── 📋 할 일 공유 (자유 업무 메모 + 완료 체크 + 댓글 · 팀 공유) ──────────────
+if page == "📋 할 일 공유":
+    st.subheader("📋 할 일 공유")
+    st.caption("자유롭게 적는 업무 메모 · 팀 전체 공유. 완료하면 ✅ 체크하거나 댓글로 “했습니다” 남기세요. "
+               "본문은 마크다운(줄바꿈·`-` 목록·`**굵게**`)이 적용됩니다.")
 
     _notices = get_notices()
     _members = get_team_members()
 
-    with st.expander("✏️ 새 공지 작성", expanded=not _notices):
+    def _author_field(col, key):
+        return (col.selectbox("작성자", _members, key=key) if _members
+                else col.text_input("작성자", key=key + "_free"))
+
+    with st.expander("✏️ 새 메모", expanded=not _notices):
         with st.form("notice_add", clear_on_submit=True):
-            _nt = st.text_input("제목", key="nt_title")
-            _nb = st.text_area("본문 (마크다운 지원)", height=180, key="nt_body")
+            _nt = st.text_input("제목 (선택)", key="nt_title")
+            _nb = st.text_area("내용", height=140, key="nt_body")
             fc = st.columns([2, 1])
-            _na = (fc[0].selectbox("작성자", _members, key="nt_author") if _members
-                   else fc[0].text_input("작성자", key="nt_author_free"))
+            _na = _author_field(fc[0], "nt_author")
             _np = fc[1].checkbox("📌 상단 고정", key="nt_pin")
             if st.form_submit_button("등록", use_container_width=True):
                 if _nt.strip() or _nb.strip():
                     add_notice(_nt, _nb, _na or "", _np)
-                    st.toast("공지 등록됨 (팀 공유)")
+                    st.toast("메모 등록됨 (팀 공유)")
                     st.rerun()
                 else:
-                    st.warning("제목이나 본문을 입력하세요.")
+                    st.warning("제목이나 내용을 입력하세요.")
 
     if not _notices:
-        st.info("아직 등록된 공지가 없습니다. 위 ‘새 공지 작성’으로 첫 공지를 남겨보세요.")
+        st.info("아직 메모가 없습니다. 위에서 추가하세요.")
 
     for n in _notices:
         with st.container(border=True):
             if ss.get("notice_edit") == n["id"]:
                 # ── 인라인 수정 폼 ──
                 with st.form(f"notice_edit_{n['id']}"):
-                    et = st.text_input("제목", value=n["title"], key=f"net_{n['id']}")
-                    eb = st.text_area("본문 (마크다운 지원)", value=n["body"], height=180, key=f"neb_{n['id']}")
+                    et = st.text_input("제목 (선택)", value=n["title"], key=f"net_{n['id']}")
+                    eb = st.text_area("내용", value=n["body"], height=140, key=f"neb_{n['id']}")
                     ep = st.checkbox("📌 상단 고정", value=bool(n["pinned"]), key=f"nep_{n['id']}")
                     sc = st.columns(2)
                     if sc[0].form_submit_button("저장", use_container_width=True):
@@ -1954,12 +1993,29 @@ if page == "📢 공지사항":
                         ss.pop("notice_edit", None); st.rerun()
             else:
                 _pin = "📌 " if n["pinned"] else ""
+                _badge = " &nbsp;<span style='font-size:11px;font-weight:700;color:#12B76A'>✅ 완료</span>" if n["done"] else ""
                 _meta = " · ".join(x for x in (n["author"], notice_ts_label(n)) if x)
-                st.markdown(
-                    f"<div style='font-size:15px;font-weight:700;color:var(--color-text)'>{_pin}{(n['title'] or '(제목 없음)')}</div>"
-                    f"<div style='font-size:12px;color:var(--color-text-secondary);margin:2px 0 8px'>{_meta}</div>",
-                    unsafe_allow_html=True)
-                st.markdown(n["body"] or "_(내용 없음)_")
+                _op = "0.45" if n["done"] else "1"
+                if n["title"]:
+                    st.markdown(
+                        f"<div style='font-size:15px;font-weight:700;color:var(--color-text);opacity:{_op}'>{_pin}{n['title']}{_badge}</div>"
+                        f"<div style='font-size:12px;color:var(--color-text-secondary);margin:2px 0 6px'>{_meta}</div>",
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f"<div style='font-size:12px;color:var(--color-text-secondary);margin:0 0 6px'>{_pin}{_meta}{_badge}</div>",
+                        unsafe_allow_html=True)
+
+                _done_new = st.checkbox("✅ 완료", value=bool(n["done"]), key=f"nd_{n['id']}")
+                if _done_new != bool(n["done"]):
+                    toggle_notice_done(n["id"]); st.rerun()
+
+                _body_md = n["body"] or "_(내용 없음)_"
+                if n["done"]:
+                    st.caption(_body_md)          # 완료: 흐리게(캡션색)
+                else:
+                    st.markdown(_body_md)
+
                 bc = st.columns([1, 1, 1, 5])
                 if bc[0].button("📌 고정 해제" if n["pinned"] else "📌 고정", key=f"npin_{n['id']}"):
                     toggle_notice_pin(n["id"]); st.rerun()
@@ -1970,6 +2026,26 @@ if page == "📢 공지사항":
                     if ss.get("notice_edit") == n["id"]:
                         ss.pop("notice_edit", None)
                     st.toast("삭제됨"); st.rerun()
+
+                # ── 댓글 ──
+                _cmts = get_comments(n["id"])
+                for cm in _cmts:
+                    cc = st.columns([10, 1])
+                    cc[0].markdown(
+                        f"<div style='font-size:12.5px;padding:2px 0'>💬 <b>{cm['author'] or '익명'}</b> "
+                        f"<span style='color:var(--color-text-secondary)'>· {comment_ts_label(cm)}</span><br>{cm['body']}</div>",
+                        unsafe_allow_html=True)
+                    if cc[1].button("🗑️", key=f"cdel_{cm['id']}", help="댓글 삭제"):
+                        del_comment(cm["id"]); st.rerun()
+                with st.form(f"cmt_{n['id']}", clear_on_submit=True):
+                    fcc = st.columns([3, 1, 1])
+                    _cb = fcc[0].text_input("댓글", key=f"cb_{n['id']}", label_visibility="collapsed",
+                                            placeholder="댓글 남기기 (예: 했습니다)")
+                    _ca = _author_field(fcc[1], f"ca_{n['id']}")
+                    if fcc[2].form_submit_button("등록", use_container_width=True):
+                        if _cb.strip():
+                            add_comment(n["id"], _ca or "", _cb)
+                            st.rerun()
     st.stop()
 
 # 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
