@@ -1137,7 +1137,19 @@ st.markdown("""<style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
-#MainMenu,footer,[data-testid="stHeader"],[data-testid="stToolbar"]{display:none!important}
+/* 배포·햄버거·툴바·푸터·데코라인·러닝표시만 숨긴다. 헤더 element 자체는 남겨야
+   사이드바를 접었을 때 다시 펴는 컨트롤이 사라지지 않는다. (이전엔 stHeader 를 통째로
+   display:none 해서 "메뉴 탭 숨기기"(사이드바 접기) 누르면 되돌릴 버튼이 없었음) */
+#MainMenu,[data-testid="stMainMenu"],footer,[data-testid="stToolbar"],
+[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
+[data-testid="stHeader"]{background:transparent!important;box-shadow:none!important;
+  height:0!important;min-height:0!important;pointer-events:none!important}
+/* 사이드바 접기/펴기 컨트롤은 항상 보이고 클릭 가능하게 (헤더 위로) */
+[data-testid="stSidebarCollapsedControl"],[data-testid="collapsedControl"],
+[data-testid="stExpandSidebarButton"],[data-testid="stSidebarCollapseButton"],
+[data-testid="baseButton-headerNoPadding"]{
+  display:flex!important;visibility:visible!important;opacity:1!important;
+  pointer-events:auto!important;z-index:1000!important}
 .block-container{padding:.7rem 1.8rem 2.5rem!important;max-width:100%!important}
 [data-testid="stAppViewContainer"],.main{background:var(--color-bg)!important}
 
