@@ -1137,20 +1137,24 @@ st.markdown("""<style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
 
-/* 배포·햄버거·툴바·푸터·데코라인·러닝표시만 숨긴다. 헤더 element 자체는 남긴다
-   (Streamlit 1.5x는 사이드바 접힘 상태의 '다시 펴기' 컨트롤을 헤더 안에 렌더함 —
-    이전엔 stHeader 통째로 display:none 이라 "메뉴 탭 숨기기" 누르면 복구 불가였음). */
 #MainMenu,[data-testid="stMainMenu"],footer,[data-testid="stToolbar"],
 [data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
-[data-testid="stHeader"]{background:transparent!important;box-shadow:none!important;
-  border:none!important;pointer-events:none!important}
-/* ① 사이드바 '접기' 버튼은 아예 없앤다 — 팀 대시보드라 메뉴는 항상 켜둔다 */
-[data-testid="stSidebarCollapseButton"]{display:none!important}
-/* ② 그래도 이미 접힌 사람이 있으면 '다시 펴기' 컨트롤은 항상 보이고 클릭 가능 */
-[data-testid="stSidebarCollapsedControl"],[data-testid="collapsedControl"],
-[data-testid="stExpandSidebarButton"]{
-  display:flex!important;visibility:visible!important;opacity:1!important;
-  pointer-events:auto!important;z-index:1000!important}
+[data-testid="stHeader"]{background:transparent!important;box-shadow:none!important;border:none!important}
+
+/* ── 사이드바(메뉴)는 항상 펼친 상태로 고정 — 팀 대시보드라 접기 불필요.
+   과거: 접으면 되돌릴 컨트롤이 헤더(숨김) 안에 있어 복구 불가 → 아예 접히지 않게 한다. */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stExpandSidebarButton"]{display:none!important}
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"][aria-expanded="false"]{
+  width:236px!important;min-width:236px!important;max-width:236px!important;
+  transform:none!important;margin-left:0!important;left:0!important;
+  visibility:visible!important;opacity:1!important;overflow:visible!important}
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"]{
+  display:block!important;visibility:visible!important;opacity:1!important}
 .block-container{padding:.7rem 1.8rem 2.5rem!important;max-width:100%!important}
 [data-testid="stAppViewContainer"],.main{background:var(--color-bg)!important}
 
@@ -1252,6 +1256,25 @@ section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"]>div:
 .sb-brand-sub{font-size:10.5px;color:var(--color-muted);padding:0 6px 14px}
 .sb-sec{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--color-muted);margin:16px 6px 4px}
 </style>""", unsafe_allow_html=True)
+
+# 사이드바가 접힌 채로 들어온 사용자를 위해 강제로 펼친다 (CSS 만으로 안 풀리는 경우 대비).
+components.html("""<script>
+(function(){
+  var d = window.parent && window.parent.document;
+  function open(){
+    if(!d) return;
+    var sb = d.querySelector('section[data-testid="stSidebar"]');
+    if(sb && sb.getAttribute('aria-expanded') === 'false'){
+      var btn = d.querySelector('[data-testid="stSidebarCollapsedControl"] button, [data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button');
+      if(btn){ btn.click(); }
+      sb.setAttribute('aria-expanded','true');
+      sb.style.transform = 'none';
+    }
+  }
+  open(); setTimeout(open, 300); setTimeout(open, 1200);
+})();
+</script>""", height=0)
+
 
 def _course_picker(label, key):
     months = available_months()
