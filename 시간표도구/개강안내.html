@@ -830,7 +830,7 @@ function parseXLS(arrayBuffer){
       const rs=parseInt(cell.getAttribute('rowspan')||1);
       const cs=parseInt(cell.getAttribute('colspan')||1);
       const text=cellText(cell);
-      cellStore[`${ri},${ci}`]={text,raw:cell.getAttribute('data-v')||'',rowspan:rs,colspan:cs,row:ri,col:ci};
+      cellStore[`${ri},${ci}`]={text,raw:cell.innerHTML||'',rowspan:rs,colspan:cs,row:ri,col:ci};
       for(let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++){
         if(dr||dc) occupied[`${ri+dr},${ci+dc}`]=`${ri},${ci}`;
       }
@@ -846,7 +846,20 @@ function parseXLS(arrayBuffer){
 
   const classes=[];
   const skipped=[];
-  for(let ri=HEADER_ROWS;ri<rows.length;ri++){
+  // 새 '기간시간표' xlsx는 헤더 1행(바로 다음 행이 09:00) — 옛 xls(헤더 3행) 좌표로 맞춰서
+  // buildTimetable 등 기존 렌더링(HEADER_ROWS=3 가정)을 그대로 쓰게 한다
+  const bodyStart=/^\d{1,2}:\d{2}$/.test(rows[1]?cellText(rows[1].querySelector('td,th')||{}):'')?1:HEADER_ROWS;
+  const rowShift=HEADER_ROWS-bodyStart;
+  if(bodyStart===1){
+    const cnt={};
+    for(let c=1;c<totalCols;c++){
+      const base=(col_room[c]||'').replace(/_\d+층$/,'');
+      col_room[c]=base;
+      cnt[base]=(cnt[base]||0)+1;
+      subHeaders[c]=`${base}-${cnt[base]}`;
+    }
+  }
+  for(let ri=bodyStart;ri<rows.length;ri++){
     for(let ci=1;ci<totalCols;ci++){
       const info=cellStore[`${ri},${ci}`];
       if(!info||info.row!==ri) continue;
@@ -862,10 +875,13 @@ function parseXLS(arrayBuffer){
         dayRaw=(pDay.exec(text)||[])[1]||'';
       }else if(nd){
         // 새 인트라넷 '기간시간표' xlsx 양식: 과목↵강의장 | 강사↵개강일: ..↵종강일: ..↵요일: 토일 ..
-        subject=(info.raw.split('\n')[0]||text.split(' ')[0]).trim();
+        // 첫 줄 = 과목명 (SheetJS 버전마다 줄바꿈이 <br/> 또는 \n 이라 둘 다 처리)
+        subject=info.raw.split(/<br\s*\/?>|\n/i)[0].replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').trim()||text.split(' ')[0];
         startDate=nd[1];
         endDate=(/종강일:\s*(\d{4}-\d{2}-\d{2})/.exec(text)||[])[1]||'';
         dayRaw=(/요일:\s*([월화수목금토일~\/]+)/.exec(text)||[])[1]||'';
+        // 새 양식은 '토일'처럼 붙여 씀 → 옛 양식 '토/일'로 (월수금·화목은 formatDays가 원래 붙은 형태로 처리)
+        if(/^[월화수목금토일]{2,}$/.test(dayRaw)&&!/월수금|화목/.test(dayRaw)) dayRaw=dayRaw.split('').join('/');
       }else{
         if(text.length>8) skipped.push({row:ri,col:ci,text});
         continue;
@@ -891,7 +907,7 @@ function parseXLS(arrayBuffer){
       classes.push({
         subject,startDate,endDate,day,dayRaw,timeStr,
         classroom,colName,subName,textbook,
-        startRow:ri,rowspan:info.rowspan,col:ci,
+        startRow:ri+rowShift,rowspan:info.rowspan,col:ci,
         announcement
       });
     }
