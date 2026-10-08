@@ -746,16 +746,18 @@ function formatDays(raw){
 // ── 강의장 이름 ───────────────────────────────────────────────────────────────
 function formatClassroom(colName){
   if(colName==='비대면') return '비대면';
-  const base=colName.replace(/\([^)]*\)/g,'').trim();
+  const base=colName.replace(/\([^)]*\)/g,'').replace(/_\d+층$/,'').trim();  // 새 xlsx 헤더 'A(국비)_9층' → 'A'
   const fl=CLASSROOM_FLOORS[base];
   const flLabel=fl?FLOOR_LABELS[fl]:'';
   return flLabel?`${base}강의장 (${flLabel})`:`${base}강의장`;
 }
 
 // ── 시간 계산 ─────────────────────────────────────────────────────────────────
-function calcTime(rowIdx, rowspan){
+function calcTime(rowIdx, rowspan, label){
   const BASE=9*60, STEP=30, HEADER_ROWS=3;
-  const s=BASE+(rowIdx-HEADER_ROWS)*STEP;
+  // 행 첫 칸에 "09:00" 같은 시간 라벨이 있으면 그걸 기준으로 (새 기간시간표 xlsx는 헤더가 1행이라 고정 오프셋이 안 맞음)
+  const lm=/^(\d{1,2}):(\d{2})$/.exec((label||'').trim());
+  const s=lm?(+lm[1])*60+(+lm[2]):BASE+(rowIdx-HEADER_ROWS)*STEP;
   const e=s+rowspan*STEP;
   const fmt=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
   return `${fmt(s)}~${fmt(e)}`;
@@ -828,7 +830,7 @@ function parseXLS(arrayBuffer){
       const rs=parseInt(cell.getAttribute('rowspan')||1);
       const cs=parseInt(cell.getAttribute('colspan')||1);
       const text=cellText(cell);
-      cellStore[`${ri},${ci}`]={text,rowspan:rs,colspan:cs,row:ri,col:ci};
+      cellStore[`${ri},${ci}`]={text,raw:cell.getAttribute('data-v')||'',rowspan:rs,colspan:cs,row:ri,col:ci};
       for(let dr=0;dr<rs;dr++) for(let dc=0;dc<cs;dc++){
         if(dr||dc) occupied[`${ri+dr},${ci+dc}`]=`${ri},${ci}`;
       }
@@ -851,15 +853,23 @@ function parseXLS(arrayBuffer){
       const text=info.text;
       const ms=pSubj.exec(text);
       const md=pStart.exec(text);
-      if(!ms||!md){
+      const nd=/개강일:\s*(\d{4}-\d{2}-\d{2})/.exec(text);
+      let subject,startDate,endDate,dayRaw;
+      if(ms&&md){
+        subject=ms[1].trim();
+        startDate=md[1];
+        endDate=(pEnd.exec(text)||[])[1]||'';
+        dayRaw=(pDay.exec(text)||[])[1]||'';
+      }else if(nd){
+        // 새 인트라넷 '기간시간표' xlsx 양식: 과목↵강의장 | 강사↵개강일: ..↵종강일: ..↵요일: 토일 ..
+        subject=(info.raw.split('\n')[0]||text.split(' ')[0]).trim();
+        startDate=nd[1];
+        endDate=(/종강일:\s*(\d{4}-\d{2}-\d{2})/.exec(text)||[])[1]||'';
+        dayRaw=(/요일:\s*([월화수목금토일~\/]+)/.exec(text)||[])[1]||'';
+      }else{
         if(text.length>8) skipped.push({row:ri,col:ci,text});
         continue;
       }
-
-      const subject=ms[1].trim();
-      const startDate=md[1];
-      const endDate=(pEnd.exec(text)||[])[1]||'';
-      const dayRaw=(pDay.exec(text)||[])[1]||'';
 
       // 시간: OT/단축 보강일(예: "10/10, 2H, 14:00~16:00") 제거 후 명시 시간 우선
       // 단축일 표기를 안 지우면 정규 수업시간 대신 그 하루짜리 단축 시간이 전체 시간으로 잘못 인식된다
@@ -867,7 +877,7 @@ function parseXLS(arrayBuffer){
         .replace(/\d+\/\d+\s+OT\s+\d{2}:\d{2}~\d{2}:\d{2}/g,'')
         .replace(/\d+\/\d+,\s*\d+H,\s*\d{2}:\d{2}~\d{2}:\d{2}/g,'');
       const tm=/(\d{2}:\d{2}~\d{2}:\d{2})/.exec(textNoOT);
-      const timeStr=tm?tm[1]:calcTime(ri,info.rowspan);
+      const timeStr=tm?tm[1]:calcTime(ri,info.rowspan,cellText(rows[ri].querySelector('td,th')||{}));
 
       const colName=col_room[ci]||'?';
       const subName=subHeaders[ci]||'';
@@ -1180,7 +1190,9 @@ function loadFileAuto(file){
       try{
         const parsed=parseXLS(e.target.result);
         if(!parsed.classes.length){ resolve({file:file.name,skip:true}); return; }
-        const month=detectMonth(parsed.classes);
+        // 파일명에 기간(예: 기간시간표_20261101_20261130)이 있으면 그 월로 — 개강일 다수결은 전월 개강 강좌가 많으면 틀림
+        const fm=/_(\d{4})(\d{2})\d{2}_\d{8}/.exec(file.name);
+        const month=fm?`${fm[1]}-${fm[2]}`:detectMonth(parsed.classes);
         const type=detectType(parsed.classes);
         if(!month){ resolve({file:file.name,skip:true}); return; }
         if(!allSchedules[month]) allSchedules[month]={};
