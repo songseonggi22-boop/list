@@ -782,30 +782,85 @@ function discordFor(cls){
 
 // ── 격일 달력시간표 ── 대시보드가 구글시트(김욱동 학과장 월별 일정표)를 블록 단위로 파싱해
 // window.__GYEOKIL__ = [{tab, title, notes, weeks:[[{d, iso, label}]*7]}] 로 주입.
-// 강의 → 블록 매칭 점수: 과목명이 제목/메모에 (+4) 또는 개강일 라벨이 과목 일부(+3, '에이전트')
-//  · 시작시각 '19:00' (+2) · 요일패턴 '월수금' (+2) · 'M월 D일' (+1). 개강일이 블록 달력에 있어야 하고 3점 이상만.
-//  동점이면 제목이 짧은(=한 과정 전용) 블록. ponytail: 휴리스틱 — 못 찾으면 '다른 달력 추가'로 직접 고른다.
+// 강의 → 블록 매칭 = 조건 필터 후 선호도 (2026-10-14 전체 점검 후 재작성 — 오전 매일반 누락·다른 과목/시간/주말 오매칭 제거)
+//  필터: ① 개강일이 블록 달력에 있고 그날 라벨이 수업(개강·휴강·공휴일 아님) ② 평일/주말 블록 구분(라벨이 토·일에만 = 주말)
+//        ③ 라벨 '매일' ↔ 매일반만, '월수'/'화목' ↔ 그 패턴 격일반만
+//        ④ 제목에 과정명이 있으면: 같은 줄의 과정명(번호까지)·시각·요일패턴이 모두 맞아야
+//        ⑤ 제목에 과정명이 없는 범용 블록: 제목 요일패턴·라벨 과목(예 '컴활')이 강의와 어긋나지 않아야
+//        ⑥ 제목에 기간 시작일이 있으면 개강일이 ±3일 안
+//  선호: 개강월 탭(+20) > 과정명 블록(+10) > 시각 명시(+2) > 제목/메모에 개강일·시각(+1) > 짧은 제목
+const GY_OFF = /개강|휴강|휴무|연휴|대체|한글날|개천절|성탄|공휴|신정|설날|추석/;
+const GY_PAT = /월수금|화목금|월수|화목/g;
+function gyLine(line){
+  const times = line.match(/\d{1,2}:\d{2}/g) || [];
+  const pats = line.match(GY_PAT) || [];
+  const rest = line.replace(/\d{1,2}:\d{2}(\s*[~-]\s*\d{1,2}:\d{2})?\s*시?/g,' ')
+    .replace(/\d{1,2}월\s*\d{1,2}일|\d{1,2}\/\d{1,2}/g,' ').replace(GY_PAT,' ')
+    .replace(/휴보강\s*건?|휴강|보강|개강|종강|주말|평일|격일|매일|금요수업|수업|일정표|특이사항/g,' ');
+  // 공백은 붙이고 줄바꿈은 구분 (라벨 '프롬프트1↵에이전트1' → 두 토큰)
+  const toks = rest.replace(/[ \t]+/g,'').split(/[\n\/:~()（）\-·|,]+/).filter(t => t.length>=2 && /[가-힣A-Za-z]{2}/.test(t));
+  return {times, pats, toks};
+}
+const gyNorm = s => (s||'').replace(/\([^)]*\)|（[^）]*）/g,'').replace(/\/\s*(격일|주말)\s*$/,'').replace(/^\s*주말\s*\//,'')
+  .replace(/\s/g,'').replace(/^AI/i,'');
+function gySubj(subject, tok){   // 과정명 일치: 같거나 강의명이 토큰으로 시작('컴활1급'⊃'컴활'). 둘 다 끝번호 있으면 같아야
+  const a = gyNorm(subject), b = gyNorm(tok);
+  const an = (a.match(/(\d+)$/)||[])[1], bn = (b.match(/(\d+)$/)||[])[1];
+  const a0 = a.replace(/\d+$/,''), b0 = b.replace(/\d+$/,'');
+  if(b0.length<2 || (an && bn && an!==bn)) return false;
+  return a0===b0 || a0.startsWith(b0);
+}
+function gyLab(subject, tok){   // 달력 라벨('CG마야','에이전트','프롬프트1')이 강의명 안에 들어 있나. 끝번호 둘 다 있으면 같아야
+  const a = gyNorm(subject), b = gyNorm(tok);
+  const an = (a.match(/(\d+)$/)||[])[1], bn = (b.match(/(\d+)$/)||[])[1];
+  const b0 = b.replace(/\d+$/,'');
+  return b0.length>=2 && !(an && bn && an!==bn) && (a.includes(b0) || gySubj(subject, tok));
+}
+const gyPatOk = (p, pat) => !!pat && (p.startsWith(pat) || pat.startsWith(p));
 function gyeokilFor(cls){
   const B = (typeof window!=='undefined' && window.__GYEOKIL__) || [];
-  const base = (cls.subject||'').replace(/\/\s*(격일|주말)$/,'').replace(/[\s()（）]/g,'').replace(/\d+$/,'');
   const hhmm = (cls.timeStr||'').trim().slice(0,5);
-  const pat = (cls.day||'').split('(')[0].replace(/[^월화수목금토일]/g,'');   // '월/수/금 (주 2,3일)' → '월수금'
+  const dpart = (cls.day||'').split('(')[0];
+  const daily = /주\s*[4-6]일/.test(cls.day||'') || /[~-]/.test(dpart);
+  const pat = daily ? '' : dpart.replace(/[^월화수목금토일]/g,'');   // '월/수/금 (주 2,3일)' → '월수금'
+  const wk = /[토일]/.test(dpart);
   const [, m, d] = (cls.startDate||'').split('-').map(Number);
-  let best = -1, bs = 0;
+  let best = null, bs = -1;
   B.forEach((b, i) => {
     const on = b.weeks.flat().find(x => x.iso === cls.startDate);
-    if(!on) return;
+    if(!on || !on.label || GY_OFF.test(on.label)) return;                                   // ①
+    const days = b.weeks.flatMap(w => w.map((x,k) => x.label && !GY_OFF.test(x.label) ? k : -1)).filter(k => k>=0);
+    if((days.length>0 && days.every(k => k===0 || k===6)) !== wk) return;                    // ②
+    const lab = on.label.replace(/\s/g,'');
+    if(/^(월수|화목)/.test(lab) && !gyPatOk(lab.slice(0,2), pat)) return;                    // ③
+    if(lab==='매일' && !daily) return;
+    // ⑥ 제목에 기간 시작일('10월 19일~')이 있으면 개강일이 그 ±3일 안 (기간 중간에 여는 국비 과정 등 제외)
+    const starts = [...b.title.matchAll(/(\d{1,2})월\s*(\d{1,2})일\s*~/g)]
+      .map(x => Date.UTC(+cls.startDate.slice(0,4) - (+x[1] > m + 6 ? 1 : 0), +x[1]-1, +x[2]));
+    const t0 = Date.UTC(+cls.startDate.slice(0,4), m-1, d);
+    if(starts.length && !starts.some(t => Math.abs(t - t0) <= 3*864e5)) return;
+    const lines = b.title.split('\n').map(gyLine), named = lines.filter(l => l.toks.length);
+    // 개강월 탭 우선 (같은 과정이 전달 탭에도 이어 그려져 있음)
+    const ty = /(\d{4})\.\s*(\d{1,2})월/.exec(b.tab) || /(\d{2})년\s*(\d{1,2})월/.exec(b.tab);
+    let s = ty && (+ty[1] % 100) === (+cls.startDate.slice(2,4)) && +ty[2] === m ? 20 : 0;
+    if(named.length){                                                                        // ④
+      const ok = named.find(l => l.toks.some(t => gySubj(cls.subject, t))
+        && (!l.times.length || l.times.includes(hhmm))
+        && (!l.pats.length || l.pats.some(p => gyPatOk(p, pat))));
+      if(!ok) return;
+      s += 10 + (ok.times.length ? 2 : 0);
+    } else {                                                                                 // ⑤
+      const pats = lines.flatMap(l => l.pats);
+      if(pats.length && !pats.some(p => gyPatOk(p, pat))) return;
+    }
+    const labToks = gyLine(on.label).toks;                     // 개강일 라벨이 과목명(예 '컴활','CG마야')이면 강의와 맞아야
+    if(labToks.length && !labToks.some(t => gyLab(cls.subject, t))) return;
     const head = (b.title + b.notes).replace(/\s/g,'');
-    const lab = (on.label||'').replace(/\s/g,'').replace(/\d+$/,'');
-    let s = 0;
-    if(base.length>=2 && (head.includes(base) || head.includes(base.replace(/^AI/,'')))) s += 4;
-    else if(lab.length>=2 && !/매일|휴|보강|개강|월수|화목/.test(lab) && base.includes(lab)) s += 3;
-    if(/^\d{2}:\d{2}$/.test(hhmm) && head.includes(hhmm)) s += 2;
-    if(pat.length>=2 && pat.length<=3 && head.includes(pat)) s += 2;
     if(m && (head.includes(`${m}월${d}일`) || head.includes(`${String(m).padStart(2,'0')}월${d}일`))) s += 1;
-    if(s>=3 && (s>bs || (s===bs && b.title.length < B[best].title.length))){ best = i; bs = s; }
+    if(hhmm && b.notes.includes(hhmm)) s += 1;
+    if(s>bs || (s===bs && b.title.length < B[best].title.length)){ best = i; bs = s; }
   });
-  return best < 0 ? null : best;
+  return best;
 }
 
 function gyeokilCard(i){
