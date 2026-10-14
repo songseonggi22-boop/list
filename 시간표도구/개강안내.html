@@ -654,7 +654,7 @@ function announceFooter(){
 * 강의장은 개강 전날까지 변경될 수 있습니다.
 * 코리아교육그룹-스마트러닝(앱/어플)에서 일정 및 강의장 확인이 가능합니다.
 * 일정 변경 및 취소는 개강 3일 전까지만 가능하며, 수업 자리는 지정석이 아닙니다.
-* 비대면 수업 링크는 문자 발송됩니다.
+* 비대면 수업을 원하실 경우 접속코드로 참여 부탁드립니다.
 
 * 본 건물 지하주차장은 시간대에 따라 진출입 지연이 발생할 수 있으므로 가급적 대중교통 이용을 권장드립니다.
 * 주차는 수업 시간만큼만 무료 지원되며, 초과 시 30분당 1,200원의 추가요금이 발생합니다. (추가요금은 실물카드 결제만 가능 / 삼성페이 불가)
@@ -724,7 +724,25 @@ function findTextbook(subject){
 // 캐시(localStorage)에 저장된 옛 파싱 결과라도 항상 최신 교재 매핑으로 재계산
 function buildAnnouncement(cls){
   const textbook = findTextbook(cls.subject);
-  return `· 수강과목 : ${cls.subject}\n· 개강일 : ${cls.startDate}\n· 종강일 : ${cls.endDate}\n· 요일 : ${cls.day}\n· 시간 : ${cls.timeStr}\n· 강의장 : ${cls.classroom}\n· 교재 : ${textbook||'(해당 없음)'}`;
+  const dc = discordFor(cls);
+  return `· 수강과목 : ${cls.subject}\n· 개강일 : ${cls.startDate}\n· 종강일 : ${cls.endDate}\n· 요일 : ${cls.day}\n· 시간 : ${cls.timeStr}\n· 강의장 : ${cls.classroom}\n· 교재 : ${textbook||'(해당 없음)'}`
+    + (dc && dc.code ? `\n· 비대면 접속코드 : ${dc.code}` : '');
+}
+
+// 비대면 디스코드 초대코드 — 대시보드가 구글시트를 읽어 window.__DISCORD__ 로 주입 (없으면 줄 생략).
+// 강의장 글자 + 시작 시각 + 평일/주말 + 개강일 ±7일 + (시트에 요일 있으면) 첫 요일로 후보를 좁히고,
+// 후보가 여럿이면 과목명이 맞는 것만 — 애매하면 틀린 코드 대신 안 넣는다.
+function discordFor(cls){
+  const L = (typeof window!=='undefined' && window.__DISCORD__) || [];
+  const room = ((cls.classroom||'').match(/^([A-Za-z])/)||[])[1];
+  const hour = parseInt(cls.timeStr, 10);
+  if(!L.length || !room || isNaN(hour) || !cls.startDate) return null;
+  const t0 = Date.parse(cls.startDate), dr = cls.dayRaw||'', wk = /[토일]/.test(dr);
+  const c = L.filter(d => d.room===room.toUpperCase() && d.hour===hour && d.weekend===wk
+    && Math.abs(Date.parse(d.start)-t0) <= 7*864e5 && (!d.days || !dr || d.days[0]===dr[0]));
+  if(c.length===1) return c[0];
+  const n = s => (s||'').replace(/^.*\//,'').replace(/[\s()（）]/g,'');
+  return c.find(d => n(cls.subject).includes(n(d.subject)) || n(d.subject).includes(n(cls.subject))) || null;
 }
 
 // ── 요일 포맷 ─────────────────────────────────────────────────────────────────

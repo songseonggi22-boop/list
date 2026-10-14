@@ -4,6 +4,7 @@ import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io, ha
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+import sheets_live
 
 TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
 
@@ -13,21 +14,38 @@ def _tt_tool_html():
     with open(TT_TOOL, encoding="utf-8") as f:
         return f.read()
 
-def _consultant_inject(consultant):
-    """window.__CONSULTANT__ 주입 스크립트 조각 (개강안내.html consultantInfo() 가 읽음)."""
-    if not consultant:
-        return ""
-    js = json.dumps(consultant, ensure_ascii=False).replace("</", "<\\/")
-    return "try{window.__CONSULTANT__=" + js + ";}catch(e){}\n"
+def _consultant_inject(consultant, discord=None):
+    """window.__CONSULTANT__ / __DISCORD__ 주입 스크립트 조각
+    (개강안내.html consultantInfo() · discordFor() 가 읽음)."""
+    out = ""
+    for var, val in (("__CONSULTANT__", consultant), ("__DISCORD__", discord)):
+        if val:
+            js = json.dumps(val, ensure_ascii=False).replace("</", "<\\/")
+            out += "try{window." + var + "=" + js + ";}catch(e){}\n"
+    return out
 
-def render_timetable_tool(hash_tab="timetable", preload=None, height=1500, consultant=None):
+@st.cache_data(ttl=300, show_spinner="비대면 디스코드 시트 읽는 중…")
+def _discord_codes_cached():
+    try:
+        return sheets_live.discord_codes()
+    except Exception:
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cal_tabs_cached():
+    try:
+        return sheets_live.sheet_tabs(sheets_live.CAL_SHEET)
+    except Exception:
+        return []
+
+def render_timetable_tool(hash_tab="timetable", preload=None, height=1500, consultant=None, discord=None):
     """클로드놀이_배포판 개강안내.html 을 그대로 embed.
     hash_tab: 'timetable' | 'assign' | 'announce' | 'consult' | 'upload'
     preload: [(name, content_b64), ...] — 도구에 미리 주입(재업로드 불필요).
     consultant: {name,phone,mobile,email,date} — 문서 서명(담당자) 값. 없으면 도구 하드코딩 fallback.
     ※ 4개 메뉴가 각각 별도 iframe이라 상태가 안 섞임 → preload(DB 저장분)로 모두 같은 시간표를 받는다."""
     html = _tt_tool_html()
-    inject = "<script>(function(){\n" + _consultant_inject(consultant)
+    inject = "<script>(function(){\n" + _consultant_inject(consultant, discord)
     if preload:
         files_js = json.dumps([{"name": n, "b64": b} for n, b in preload], ensure_ascii=False)
         inject += (
@@ -1568,7 +1586,7 @@ def render_assign_automation():
 with st.sidebar:
     st.markdown('<div class="sb-brand">■ SBS아카데미 대전</div>'
                 '<div class="sb-brand-sub">업무 대시보드</div>', unsafe_allow_html=True)
-    PAGES = ["🏠 홈", "📋 할 일 공유", "✅ 체크리스트", "📅 강의시간표", "🎯 강의배정", "📄 개강안내문", "🗓️ 상담시간표", "📝 메모 양식", "🍚 점심값 정산"]
+    PAGES = ["🏠 홈", "📋 할 일 공유", "✅ 체크리스트", "📅 시간표", "📝 메모 양식", "🍚 점심값 정산"]
     page = st.radio("메뉴", PAGES, label_visibility="collapsed")
 
     # 녹취 메모 앱은 내부망 콜 시스템에 붙어야 해서 Cloud 통합 불가 → LAN 주소로 바로가기만
@@ -1948,7 +1966,7 @@ if page == "📝 메모 양식":
                          format_func=lambda i: (_cs[i]["name"] or "(이름 미입력)"), key="memo_consultant_sel")
     _mconsult = dict(_cs[_msel])
     if not (_mconsult.get("name") or "").strip():
-        st.caption("담당자 이름이 비어 있어요 → 🗓️ 상담시간표의 ‘담당자 명단 관리’에서 채우면 여기에도 반영됩니다. "
+        st.caption("담당자 이름이 비어 있어요 → 📅 시간표 → 상담시간표 만들기의 ‘담당자 명단 관리’에서 채우면 여기에도 반영됩니다. "
                    "지금은 플레이스홀더 그대로 나옵니다.")
 
     st.markdown("###### 양식 선택 — 버튼을 누르면 편집 창이 뜹니다")
@@ -2089,12 +2107,12 @@ if page == "📋 할 일 공유":
                             st.rerun()
     st.stop()
 
-# 시간표 4개 메뉴 → 개강안내.html 을 각각 embed(해시로 탭 지정). 각 iframe이 별도라
-# 상태는 안 섞이므로, DB에 저장한 업로드분(tt_upload)을 preload로 4곳 모두에 주입해 같은 시간표를 쓴다.
-_TT_MENU = {"📅 강의시간표": "timetable", "🎯 강의배정": "assign",
-            "📄 개강안내문": "announce", "🗓️ 상담시간표": "consult"}
-if page in _TT_MENU:
-    _hash = _TT_MENU[page]
+# 📅 시간표 한 메뉴 안에서 작업(보기/배정/개강안내문/상담시간표)을 고른다 → 개강안내.html 을 해시로 탭 지정해 embed.
+# DB에 저장한 업로드분(tt_upload)을 preload로 주입해 어느 작업이든 같은 시간표를 쓴다.
+_TT_MENU = {"📅 시간표 보기": "timetable", "🎯 강의배정": "assign",
+            "📄 개강안내문": "announce", "🗓️ 상담시간표 만들기": "consult"}
+if page == "📅 시간표":
+    _hash = _TT_MENU[st.radio("작업 선택", list(_TT_MENU), horizontal=True, key="tt_mode")]
     _ups = tt_uploads()
     _sample = os.path.join(os.path.dirname(__file__), "시간표도구", "data", "시간표.xls")
     if not _ups and os.path.exists(_sample) and st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
@@ -2103,7 +2121,7 @@ if page in _TT_MENU:
             _ups = [("샘플_시간표.xls", _sb.b64encode(_sf.read()).decode())]
 
     with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개)", expanded=not _ups):
-        st.caption("여기 올린 시간표 하나가 **4개 메뉴 전부 + 홈의 배정/문자 기능**에 함께 쓰입니다. "
+        st.caption("여기 올린 시간표 하나가 **시간표 메뉴의 모든 작업 + 홈의 배정/문자 기능**에 함께 쓰입니다. "
                    "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB 저장 → 팀원 모두 반영.")
         up = st.file_uploader("강의시간표 xls", type=["xls", "xlsx"], accept_multiple_files=True,
                               key="tt_up", label_visibility="collapsed")
@@ -2147,8 +2165,35 @@ if page in _TT_MENU:
                 save_consultants(_ced.fillna("").to_dict("records"))
                 st.success("명단 저장됨 (팀 공유)"); st.rerun()
 
+    # ── 개강안내문: 비대면 디스코드 초대코드 · 격일 달력시간표 (구글시트 실시간, 5분 캐시) ──
+    _discord = None
+    if _hash == "announce":
+        _discord = _discord_codes_cached()
+        if _discord is None:
+            st.warning("비대면 디스코드 시트를 못 읽었어요 — 개강안내문에 접속코드 줄이 빠집니다. (시트 공유가 '링크 있는 모든 사용자'인지 확인)")
+        else:
+            with st.expander(f"💬 비대면 디스코드 초대코드 ({len(_discord)}건 · 개강안내문에 자동 삽입)"):
+                st.caption("강의장·시작시각·개강일·요일로 자동 매칭해 `· 비대면 접속코드` 줄을 넣습니다. 애매하면 안 넣으니 아래 표로 대조하세요. "
+                           f"[원본 시트](https://docs.google.com/spreadsheets/d/{sheets_live.DISCORD_SHEET}/edit)")
+                st.dataframe(pd.DataFrame(_discord)[["start", "room", "hour", "days", "subject", "teacher", "code", "note"]]
+                             .rename(columns={"start": "개강", "room": "강의장", "hour": "시", "days": "요일",
+                                              "subject": "과정", "teacher": "강사", "code": "초대코드", "note": "비고"}),
+                             hide_index=True, use_container_width=True)
+        _cal_tabs = _cal_tabs_cached()
+        with st.expander("📆 격일 달력시간표 (구글시트 실시간)", expanded=True):
+            if not _cal_tabs:
+                st.warning("달력시간표 시트를 못 읽었어요.")
+            else:
+                _nm = datetime.now(KST).date()   # 이번 달 탭 기본 (탭 이름 '2026.10월…' / '27년2월…')
+                _pref = [f"{_nm.year}.{_nm.month:02d}", f"{_nm.year % 100}년{_nm.month}월"]
+                _di = next((i for i, (n, _) in enumerate(_cal_tabs) if any(p in n for p in _pref)), 0)
+                _ci = st.selectbox("월 선택", range(len(_cal_tabs)), index=_di,
+                                   format_func=lambda i: _cal_tabs[i][0], key="cal_tab")
+                st.caption(f"[원본 시트 열기](https://docs.google.com/spreadsheets/d/{sheets_live.CAL_SHEET}/edit#gid={_cal_tabs[_ci][1]})")
+                st.iframe(sheets_live.sheet_view_url(sheets_live.CAL_SHEET, _cal_tabs[_ci][1]), height=720)
+
     _tips = {
-        "timetable": "월/평일·주말 필터로 강의를 봅니다. 강의를 선택해 문서를 만들려면 **강의배정 / 개강안내문 / 상담시간표** 메뉴로 가세요.",
+        "timetable": "월/평일·주말 필터로 강의를 봅니다. 강의를 골라 문서를 만들려면 위 **작업 선택**에서 강의배정 / 개강안내문 / 상담시간표 만들기를 고르세요.",
         "assign": "강의를 여러 개 골라 → 하단 막대 **배정 진행**.",
         "announce": "강의 하나 클릭 → 개강안내문(복사). 여러 개 골라 하단 막대 **개강안내문 생성**도 가능.",
         "consult": "강의를 **여러 칸 토글 선택** → 화면 하단 막대 **시간표 생성** → 미리보기에서 **인쇄 / PNG 저장**.",
@@ -2159,7 +2204,7 @@ if page in _TT_MENU:
     import base64 as _b64m
     _full = _tt_tool_html()
     if _consultant:
-        _full += "<script>" + _consultant_inject(_consultant) + "</script>"
+        _full += "<script>" + _consultant_inject(_consultant, _discord) + "</script>"
     if _preload:
         _fjs = json.dumps([{"name": n, "b64": b} for n, b in _preload], ensure_ascii=False)
         _full += ("<script>(function(){var FS=" + _fjs + ";async function p(){try{"
@@ -2183,7 +2228,7 @@ if page in _TT_MENU:
 
     if _preload and not _ups:
         st.caption(f"⏳ `인트라넷 시간표/` 폴더 {len(_preload)}개 파일을 도구에 불러오는 중 — 목록이 뜨기까지 몇 초 걸릴 수 있습니다.")
-    render_timetable_tool(_hash, preload=_preload or None, consultant=_consultant)
+    render_timetable_tool(_hash, preload=_preload or None, consultant=_consultant, discord=_discord)
     st.stop()
 
 # ── 헤더 (실시간 시계, 한국시간 기준) ────────────────────────────
