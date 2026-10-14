@@ -123,6 +123,26 @@ table.timetable .class-cell.imminent .class-block{border-left-color:var(--color-
 .announce-modal .modal{width:520px;max-width:95vw}
 .announce-modal .modal-body{max-height:72vh;overflow-y:auto}
 .announce-result{font-size:12px;line-height:1.9;white-space:pre-wrap;font-family:inherit}
+/* 격일 달력시간표 카드 (구글시트 블록 재구성) */
+.gy-head{margin:18px 0 8px;font-size:13px;font-weight:600;color:var(--color-text);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.gy-head select{font-size:12px;padding:3px 6px;border:1px solid #ddd;border-radius:6px;max-width:100%}
+.gy-card{background:#fff;padding:12px;border:1px solid #E7EBEF;border-radius:8px;width:100%;box-sizing:border-box}
+.gy-title{font-size:13px;font-weight:700;white-space:pre-line;margin-bottom:6px;color:#333D46}
+.gy-tbl{width:100%;border-collapse:collapse;table-layout:fixed}
+.gy-tbl th{font-size:11px;padding:4px 0;background:#F1F4F6;color:#707F8D;border:1px solid #E7EBEF}
+.gy-tbl th:first-child,.gy-tbl td.sun .gd{color:#D14343}
+.gy-tbl th:last-child,.gy-tbl td.sat .gd{color:#3B6FD1}
+.gy-tbl td{border:1px solid #E7EBEF;height:40px;vertical-align:top;padding:2px 3px}
+.gy-tbl .gd{font-size:10px;color:#707F8D}
+.gy-tbl .gl{font-size:11px;font-weight:600;text-align:center;white-space:pre-line;line-height:1.2;margin-top:2px}
+.gy-tbl td.g-on{background:#E8F3EC}.gy-tbl td.g-on .gl{color:#1F7A44}
+.gy-tbl td.g-off{background:#FCEBEB}.gy-tbl td.g-off .gl{color:#C0392B}
+.gy-tbl td.g-make{background:#FFF4E0}.gy-tbl td.g-make .gl{color:#B26A00}
+.gy-tbl td.g-new .gl{color:#3B6FD1}
+.gy-notes{font-size:11px;color:#707F8D;white-space:pre-line;margin-top:6px}
+.gy-src{font-size:10px;color:#A0AAB4;margin-top:4px}
+.gy-actions{display:flex;gap:6px;justify-content:flex-end;margin:6px 0 12px}
+.gy-actions button{font-size:12px;padding:4px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer}
 
 /* 배정변경 모달 */
 .assign-modal .modal{width:min(1000px,94vw);max-width:94vw}
@@ -452,6 +472,8 @@ table.timetable .class-cell.imminent .class-block{border-left-color:var(--color-
   <span id="float-bar-count"></span>
   <a id="float-bar-clear" class="float-bar-clear">초기화</a>
   <button class="btn" id="float-bar-action"></button>
+  <button class="btn" id="float-bar-action2" style="display:none"></button>
+  <button class="btn" id="float-bar-action3" style="display:none"></button>
 </div>
 
 <!-- 상담시간표 미리보기 모달 -->
@@ -501,6 +523,7 @@ table.timetable .class-cell.imminent .class-block{border-left-color:var(--color-
     </div>
     <div class="modal-body">
       <pre class="announce-result" id="announce-result"></pre>
+      <div id="announce-gyeokil"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeAnnounceModal()">닫기</button>
@@ -594,7 +617,8 @@ function announceTotalCount(){
 // TAB: 배정 상태
 let assignMonth = null;
 let assignType  = 'weekday';
-const assignSelectedByMonth = {}; // { 'YYYY-MM_weekday': Set<key> }
+// 선택은 개강안내문·배정·상담시간표가 한 묶음을 공유 — 한 시간표에서 여러 강의를 체크한 뒤 하단 막대에서 작업을 고른다.
+const assignSelectedByMonth = selectedKeysByMonth; // { 'YYYY-MM_weekday': Set<key> }
 function assignMonthTypeKey(m, t){ return `${m}_${t}`; }
 function getAssignKeys(){
   const k = assignMonthTypeKey(assignMonth, assignType);
@@ -608,7 +632,7 @@ function assignTotalCount(){
 // TAB 4 상태
 let consultMonth = null;
 let consultType  = 'weekday';
-const consultSelectedByMonth = {}; // { 'YYYY-MM_weekday': Set<key> }
+const consultSelectedByMonth = selectedKeysByMonth; // 공유 (위 assignSelectedByMonth 주석 참고)
 
 function consultMonthTypeKey(m, t){ return `${m}_${t}`; }
 function getConsultKeys(){
@@ -697,6 +721,14 @@ function updateFloatBar(){
   document.getElementById('float-bar-action').textContent = cfg.label;
   document.getElementById('float-bar-action').onclick = cfg.action;
   document.getElementById('float-bar-clear').onclick = cfg.clear;
+  // 개강안내문 화면 = 통합 시간표: 체크한 강의로 배정·상담시간표도 바로 (선택 공유)
+  const multi = activePanel.id === 'tab-announce';
+  [['float-bar-action2', '강의배정', openAssignBatch], ['float-bar-action3', '상담시간표 만들기', generateConsultTable]]
+    .forEach(([id, label, fn]) => {
+      const b = document.getElementById(id);
+      b.style.display = multi ? '' : 'none';
+      b.textContent = label; b.onclick = fn;
+    });
   bar.classList.add('show');
 }
 
@@ -740,9 +772,90 @@ function discordFor(cls){
   const t0 = Date.parse(cls.startDate), dr = cls.dayRaw||'', wk = /[토일]/.test(dr);
   const c = L.filter(d => d.room===room.toUpperCase() && d.hour===hour && d.weekend===wk
     && Math.abs(Date.parse(d.start)-t0) <= 7*864e5 && (!d.days || !dr || d.days[0]===dr[0]));
-  if(c.length===1) return c[0];
-  const n = s => (s||'').replace(/^.*\//,'').replace(/[\s()（）]/g,'');
-  return c.find(d => n(cls.subject).includes(n(d.subject)) || n(d.subject).includes(n(cls.subject))) || null;
+  // 과목명도 맞아야 채택 (강의장·시각만 같은 다른 과목 코드가 들어가는 사고 방지).
+  // 표기 흔들림('어드밴스에펙'/'어드벤스 에펙', 'AI에이전트1/격일')은 앞 2글자 일치로 허용.
+  const n = s => (s||'').replace(/^주말\s*\/|\/\s*(격일|주말)$/g,'').replace(/[\s()（）]/g,'');
+  const a = n(cls.subject);
+  return c.find(d => { const b = n(d.subject);
+    return a.includes(b) || b.includes(a) || (a.length>=2 && a.slice(0,2)===b.slice(0,2)); }) || null;
+}
+
+// ── 격일 달력시간표 ── 대시보드가 구글시트(김욱동 학과장 월별 일정표)를 블록 단위로 파싱해
+// window.__GYEOKIL__ = [{tab, title, notes, weeks:[[{d, iso, label}]*7]}] 로 주입.
+// 강의 → 블록 매칭 점수: 과목명이 제목/메모에 (+4) 또는 개강일 라벨이 과목 일부(+3, '에이전트')
+//  · 시작시각 '19:00' (+2) · 요일패턴 '월수금' (+2) · 'M월 D일' (+1). 개강일이 블록 달력에 있어야 하고 3점 이상만.
+//  동점이면 제목이 짧은(=한 과정 전용) 블록. ponytail: 휴리스틱 — 못 찾으면 '다른 달력 추가'로 직접 고른다.
+function gyeokilFor(cls){
+  const B = (typeof window!=='undefined' && window.__GYEOKIL__) || [];
+  const base = (cls.subject||'').replace(/\/\s*(격일|주말)$/,'').replace(/[\s()（）]/g,'').replace(/\d+$/,'');
+  const hhmm = (cls.timeStr||'').trim().slice(0,5);
+  const pat = (cls.day||'').split('(')[0].replace(/[^월화수목금토일]/g,'');   // '월/수/금 (주 2,3일)' → '월수금'
+  const [, m, d] = (cls.startDate||'').split('-').map(Number);
+  let best = -1, bs = 0;
+  B.forEach((b, i) => {
+    const on = b.weeks.flat().find(x => x.iso === cls.startDate);
+    if(!on) return;
+    const head = (b.title + b.notes).replace(/\s/g,'');
+    const lab = (on.label||'').replace(/\s/g,'').replace(/\d+$/,'');
+    let s = 0;
+    if(base.length>=2 && (head.includes(base) || head.includes(base.replace(/^AI/,'')))) s += 4;
+    else if(lab.length>=2 && !/매일|휴|보강|개강|월수|화목/.test(lab) && base.includes(lab)) s += 3;
+    if(/^\d{2}:\d{2}$/.test(hhmm) && head.includes(hhmm)) s += 2;
+    if(pat.length>=2 && pat.length<=3 && head.includes(pat)) s += 2;
+    if(m && (head.includes(`${m}월${d}일`) || head.includes(`${String(m).padStart(2,'0')}월${d}일`))) s += 1;
+    if(s>=3 && (s>bs || (s===bs && b.title.length < B[best].title.length))){ best = i; bs = s; }
+  });
+  return best < 0 ? null : best;
+}
+
+function gyeokilCard(i){
+  const b = window.__GYEOKIL__[i];
+  const cls = l => /휴|연휴|공휴|대체|한글날|개천절|성탄|신정|설날|추석/.test(l) ? 'g-off'
+    : /보강/.test(l) ? 'g-make' : /개강/.test(l) ? 'g-new' : l ? 'g-on' : '';
+  const rows = b.weeks.map(w => '<tr>' + w.map((x, k) =>
+    `<td class="${cls(x.label)}${k===0?' sun':''}${k===6?' sat':''}"><div class="gd">${escapeHtml(x.d)}</div><div class="gl">${escapeHtml(x.label)}</div></td>`
+  ).join('') + '</tr>').join('');
+  return `<div class="gy-card" id="gy-${i}">
+    <div class="gy-title">${escapeHtml(b.title || '달력시간표')}</div>
+    <table class="gy-tbl"><tr>${'일월화수목금토'.split('').map(x=>`<th>${x}</th>`).join('')}</tr>${rows}</table>
+    ${b.notes ? `<div class="gy-notes">${escapeHtml(b.notes)}</div>` : ''}
+    <div class="gy-src">${escapeHtml(b.tab)}</div></div>
+  <div class="gy-actions"><button onclick="copyGyeokil(${i},this)">이미지 복사</button><button onclick="saveGyeokil(${i})">PNG 저장</button><button onclick="this.parentElement.previousElementSibling.remove();this.parentElement.remove()">빼기</button></div>`;
+}
+
+let gyeokilShown = [];
+function renderGyeokil(idxs){
+  const box = document.getElementById('announce-gyeokil');
+  const B = window.__GYEOKIL__ || [];
+  if(!B.length){ box.innerHTML = ''; return; }
+  gyeokilShown = [...new Set(idxs)];
+  const opts = B.map((b, i) => `<option value="${i}">${escapeHtml(b.tab.split(' ')[0] + ' · ' + (b.title||'').split('\n')[0])}</option>`).join('');
+  box.innerHTML = `<div class="gy-head">📆 격일 달력시간표 ${gyeokilShown.length ? '(자동 매칭)' : '— 자동 매칭 없음'}
+      <select onchange="if(this.value!==''){addGyeokil(+this.value);this.value='';}"><option value="">+ 다른 달력 추가</option>${opts}</select></div>
+    <div id="gy-list">${gyeokilShown.map(gyeokilCard).join('')}</div>`;
+}
+function addGyeokil(i){
+  if(document.getElementById('gy-'+i)) return;
+  document.getElementById('gy-list').insertAdjacentHTML('beforeend', gyeokilCard(i));
+}
+function gyeokilCanvas(i){
+  return html2canvas(document.getElementById('gy-'+i), {scale:2, backgroundColor:'#ffffff', useCORS:true});
+}
+async function copyGyeokil(i, btn){
+  try{
+    const c = await gyeokilCanvas(i);
+    const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+    btn.textContent = '복사됨 (카톡에 Ctrl+V)';
+  }catch(e){ btn.textContent = '복사 막힘 → PNG 저장'; }
+}
+function saveGyeokil(i){
+  gyeokilCanvas(i).then(c => {
+    const a = document.createElement('a');
+    a.href = c.toDataURL('image/png');
+    a.download = `격일시간표_${(window.__GYEOKIL__[i].title||'').split('\n')[0].replace(/[\\/:*?"<>|\s]+/g,'_')}.png`;
+    a.click();
+  });
 }
 
 // ── 요일 포맷 ─────────────────────────────────────────────────────────────────
@@ -1404,6 +1517,7 @@ function generateFullAnnouncement(){
   const full = announceHeader() + '\n' + bodies + announceFooter();
 
   document.getElementById('announce-result').textContent = full;
+  renderGyeokil(selected.map(gyeokilFor).filter(i => i !== null));
   document.getElementById('announce-copy-btn').textContent = '복사';
   document.getElementById('announce-copy-btn').classList.remove('copied');
   document.getElementById('announce-modal').classList.add('open');
