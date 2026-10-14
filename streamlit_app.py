@@ -4,7 +4,7 @@ import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io, ha
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-import sheets_live
+import sheets_live, intranet_sync
 
 TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
 
@@ -24,20 +24,50 @@ def _consultant_inject(consultant, discord=None, gyeokil=None):
             out += "try{window." + var + "=" + js + ";}catch(e){}\n"
     return out
 
-@st.cache_data(ttl=300, show_spinner="비대면 디스코드 시트 읽는 중…")
-def _discord_codes_cached():
-    try:
-        return sheets_live.discord_codes()
-    except Exception:
-        return None
+SYNC_PREFIX = "[동기화]"   # 인트라넷 동기화로 받은 시간표 파일 이름 앞머리 (재동기화 때 이것만 교체)
 
-@st.cache_data(ttl=300, show_spinner="격일 달력시간표 시트 읽는 중…")
-def _gyeokil_cached(ym):
-    # ym: (연,월) — 캐시 키. 달이 바뀌면 지난달·이번달·다음 두 달 탭을 다시 고른다
+def run_sync(months=3):
+    """🔄 동기화 버튼: 인트라넷 기간시간표 xlsx(지점×월×평일/주말) + 디스코드 초대코드 + 격일 달력 → DB 저장(팀 공유).
+    부분 실패해도 되는 건 저장하고 결과 메시지 목록을 돌려준다. DB 쓰기는 한 번에 모아 GitHub 백업 1회."""
+    now = datetime.now(KST)
+    msgs, files, extra = [], None, {}
     try:
-        return sheets_live.gyeokil_blocks(ym)
+        uid, pw = st.secrets.get("INTRANET_ID"), st.secrets.get("INTRANET_PW")
     except Exception:
-        return None
+        uid = pw = None
+    if not (uid and pw):
+        msgs.append(("warning", "인트라넷: Secrets에 INTRANET_ID / INTRANET_PW 가 없어 건너뜀"))
+    else:
+        try:
+            files, places = intranet_sync.sync(uid, pw, now.date(), months)
+            msgs.append(("success", f"인트라넷 시간표 {len(files)}개 ({', '.join(places)} · {months}개월 · 평일/주말)"))
+        except Exception as e:
+            msgs.append(("error", f"인트라넷: {e}"))
+    for key, label, fn in (("sync_discord", "디스코드 초대코드", sheets_live.discord_codes),
+                           ("sync_gyeokil", "격일 달력시간표", lambda: sheets_live.gyeokil_blocks((now.year, now.month)))):
+        try:
+            extra[key] = fn()
+            msgs.append(("success", f"{label} {len(extra[key])}건"))
+        except Exception as e:
+            msgs.append(("error", f"{label}: {e}"))
+    import base64
+    with _db_lock:
+        db = get_db()
+        if files:
+            db.execute("DELETE FROM tt_upload WHERE name LIKE ?", (SYNC_PREFIX + "%",))
+            db.executemany("INSERT OR REPLACE INTO tt_upload(name,content_b64,uploaded_at) VALUES(?,?,?)",
+                           [(SYNC_PREFIX + n, base64.b64encode(b).decode(), int(time.time())) for n, b in files])
+        for k, v in {**{k: json.dumps(v, ensure_ascii=False) for k, v in extra.items()},
+                     "sync_at": now.strftime("%Y-%m-%d %H:%M"), "sync_msgs": json.dumps(msgs, ensure_ascii=False)}.items():
+            db.execute("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+        db.commit()
+    backup_db_to_github()
+    return msgs
+
+def synced(key):
+    """마지막 동기화로 저장된 디스코드/격일 데이터 (없으면 None)."""
+    v = get_state(key)
+    return json.loads(v) if v else None
 
 def render_timetable_tool(hash_tab="timetable", preload=None, height=1500, consultant=None, discord=None, gyeokil=None):
     """클로드놀이_배포판 개강안내.html 을 그대로 embed.
@@ -2112,6 +2142,18 @@ if page == "📋 할 일 공유":
 # 하단 막대에서 개강안내문 / 강의배정 / 상담시간표를 고른다 (세 작업이 선택을 공유).
 # DB에 저장한 업로드분(tt_upload)을 preload로 주입해 팀원 모두 같은 시간표를 쓴다.
 if page == "📅 시간표":
+    # ── 🔄 동기화: 누를 때만 인트라넷·구글시트를 읽어 DB에 저장 (팀 공유). 평소엔 저장분만 씀 ──
+    _sc1, _sc2 = st.columns([1, 3])
+    if _sc1.button("🔄 동기화", type="primary", use_container_width=True,
+                   help="인트라넷 강의시간표(이번 달부터 3개월, 평일/주말) + 비대면 디스코드 코드 + 격일 달력시간표를 새로 가져옵니다"):
+        with st.spinner("인트라넷 · 구글시트에서 가져오는 중… (30초 안팎)"):
+            st.session_state["sync_result"] = run_sync()
+        st.rerun()
+    _sat = get_state("sync_at")
+    _sc2.caption(f"마지막 동기화: **{_sat}** (팀 공유)" if _sat else
+                 "아직 동기화 안 함 — **🔄 동기화**를 누르면 인트라넷 시간표·디스코드 코드·격일 달력을 가져옵니다.")
+    for _lv, _m in st.session_state.pop("sync_result", None) or []:
+        getattr(st, _lv)(_m)
     _ups = tt_uploads()
     _sample = os.path.join(os.path.dirname(__file__), "시간표도구", "data", "시간표.xls")
     if not _ups and os.path.exists(_sample) and st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
@@ -2120,8 +2162,8 @@ if page == "📅 시간표":
             _ups = [("샘플_시간표.xls", _sb.b64encode(_sf.read()).decode())]
 
     with st.expander(f"📤 강의시간표 엑셀 업로드 · 팀 공유  ({len(_ups)}개)", expanded=not _ups):
-        st.caption("여기 올린 시간표 하나가 **시간표 메뉴의 모든 작업 + 홈의 배정/문자 기능**에 함께 쓰입니다. "
-                   "인트라넷에서 받은 `[AIX대전]강의시간표*.xls` / `[컴퓨터대전]*.xls`를 올리세요. DB 저장 → 팀원 모두 반영.")
+        st.caption("보통은 위 **🔄 동기화**가 인트라넷에서 바로 받아 `[동기화]…` 파일로 넣습니다. 수동으로 올려도 됩니다 — "
+                   "여기 올린 시간표가 **시간표 메뉴의 모든 작업 + 홈의 배정/문자 기능**에 함께 쓰입니다. DB 저장 → 팀원 모두 반영.")
         up = st.file_uploader("강의시간표 xls", type=["xls", "xlsx"], accept_multiple_files=True,
                               key="tt_up", label_visibility="collapsed")
         if up:
@@ -2163,13 +2205,8 @@ if page == "📅 시간표":
             save_consultants(_ced.fillna("").to_dict("records"))
             st.success("명단 저장됨 (팀 공유)"); st.rerun()
 
-    # ── 구글시트 실시간 (5분 캐시): 비대면 디스코드 초대코드 · 격일 달력시간표 → 개강안내문에 자동 반영 ──
-    _discord = _discord_codes_cached()
-    _now = datetime.now(KST)
-    _gyeokil = _gyeokil_cached((_now.year, _now.month))
-    _bad = [n for n, v in (("비대면 디스코드", _discord), ("격일 달력시간표", _gyeokil)) if v is None]
-    if _bad:
-        st.warning(f"{' · '.join(_bad)} 시트를 못 읽었어요 — 개강안내문에서 그 부분만 빠집니다. (시트 공유가 '링크 있는 모든 사용자'인지 확인)")
+    # ── 마지막 동기화분: 비대면 디스코드 초대코드 · 격일 달력시간표 → 개강안내문에 자동 반영 ──
+    _discord, _gyeokil = synced("sync_discord"), synced("sync_gyeokil")
     if _discord:
         with st.expander(f"💬 비대면 디스코드 초대코드 ({len(_discord)}건 · 개강안내문에 자동 삽입)"):
             st.caption("강의장·시작시각·개강일·요일로 자동 매칭해 `· 비대면 접속코드` 줄을 넣습니다. 애매하면 안 넣으니 아래 표로 대조하세요. "
