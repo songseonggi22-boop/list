@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>body{margin:0;font:13px 'Pretendard','Noto Sans KR',sans-serif;color:#5C7A94}</style></head>
+<body><div id="msg"></div>
+<script>
+// 뉴인트라넷(kegone) 강의시간표를 "버튼 누른 사람의 브라우저"에서 받아 대시보드로 넘기는 Streamlit 컴포넌트.
+// 인트라넷이 해외 서버(Streamlit Cloud) 접속을 막아 서버에선 타임아웃 → 국내에 있는 사용자 브라우저가 대신 호출.
+// API (인트라넷 화면 JS가 쓰는 것과 동일, CORS 허용 확인됨):
+//   POST /api/auth/login                    {userId, password} → data.user.accessToken, data.placeList
+//   POST /api/op/b08/b0801/scheduler/excel  운영관리>시간표관리>시간표관리 '기간' 보기 [엑셀다운로드] → 기간시간표 xlsx
+// 비밀번호는 이 요청에만 쓰고 어디에도 저장하지 않는다.
+const API = "https://kegone.koreagroupware.com/api";
+const send = (type, data) => parent.postMessage(Object.assign({isStreamlitMessage: true, type}, data), "*");
+const say = t => { document.getElementById("msg").textContent = t; };
+const pick = (o, ...ks) => { for (const k of ks) if (o && o[k] != null && o[k] !== "") return String(o[k]); return ""; };
+const pad = n => String(n).padStart(2, "0");
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const b64 = blob => new Promise(r => { const f = new FileReader(); f.onload = () => r(String(f.result).split(",")[1]); f.readAsDataURL(blob); });
+
+async function post(path, body, token) {
+  const res = await fetch(API + path, {method: "POST", body: JSON.stringify(body),
+    headers: {"Content-Type": "application/json", ...(token ? {Authorization: `Bearer ${token}`} : {})}});
+  return res;
+}
+
+async function run(a) {
+  say("인트라넷 로그인 중…");
+  const lr = await (await post("/auth/login", {userId: a.uid, password: a.pw})).json().catch(() => ({}));
+  const code = (lr.errorCode || {}).code;
+  if (code !== "LOGIN_SUCCESS" && code !== "OK")
+    throw new Error("로그인 실패: " + (((lr.errorCode || {}).message) || lr.message || code || "응답 없음"));
+  const data = lr.data || {}, token = (data.user || {}).accessToken;
+  if (!token) throw new Error("로그인 응답에 토큰이 없어요");
+  let places = (data.placeList || []).map(p => ({siteCode: pick(p, "siteCode", "site_code"),
+    place: pick(p, "placeNo", "place_no", "place"), label: pick(p, "placeName", "place_name", "name", "label")}))
+    .filter(p => p.siteCode && p.place);
+  places = places.filter(p => p.label.includes(a.place_filter)).length ? places.filter(p => p.label.includes(a.place_filter)) : places;
+  if (!places.length) throw new Error("계정에 연결된 지점(placeList)이 없어요");
+
+  const files = [], [y0, m0] = a.start.split("-").map(Number);
+  for (const p of places) for (let i = 0; i < a.months; i++) for (const yn of ["N", "Y"]) {
+    const st = new Date(y0, m0 - 1 + i, 1), ed = new Date(y0, m0 + i, 0);   // 그 달 1일 ~ 말일
+    say(`시간표 받는 중… ${p.label} ${st.getMonth() + 1}월 ${yn === "Y" ? "주말" : "평일"} (${files.length + 1}/${places.length * a.months * 2})`);
+    const r = await post("/op/b08/b0801/scheduler/excel", {siteCode: p.siteCode, place: p.place, placeNo: p.place,
+      subjectNo: "", subjectName: "", classroomNo: "", weekendYn: yn, capacityStatus: "",
+      stDate: ymd(st), edDate: ymd(ed), view: "custom", daySelect: "ALL"}, token);
+    const blob = await r.blob(), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    if (!r.ok || head[0] !== 0x50 || head[1] !== 0x4B)   // xlsx(zip)='PK' 아니면 오류 응답
+      throw new Error(`시간표 엑셀을 못 받았어요 (${p.label} ${ymd(st)}): ` + (await blob.text()).slice(0, 150));
+    // 파일명의 '_YYYYMMDD_YYYYMMDD' 로 대시보드 도구가 월을 판정
+    const name = `[${p.label || p.place}]기간시간표_${ymd(st).replace(/-/g, "")}_${ymd(ed).replace(/-/g, "")}_${yn === "Y" ? "주말" : "평일"}.xlsx`;
+    files.push({name, b64: await b64(blob)});
+  }
+  return {files, places: places.map(p => p.label)};
+}
+
+let done = null;
+window.addEventListener("message", async e => {
+  if (!e.data || e.data.type !== "streamlit:render") return;
+  const a = e.data.args || {};
+  if (!a.run_id || done === a.run_id) return;
+  done = a.run_id;
+  let value;
+  try { value = {run_id: a.run_id, ...(await run(a))}; say("완료 — 저장 중…"); }
+  catch (err) { value = {run_id: a.run_id, error: String(err.message || err)}; say("실패: " + value.error); }
+  send("streamlit:setComponentValue", {value, dataType: "json"});
+});
+send("streamlit:componentReady", {apiVersion: 1});
+send("streamlit:setFrameHeight", {height: 28});
+</script></body></html>

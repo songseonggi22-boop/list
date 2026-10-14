@@ -4,7 +4,7 @@ import sqlite3, time, calendar as cal_lib, glob, os, re, threading, json, io, ha
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-import sheets_live, intranet_sync
+import sheets_live
 
 TT_TOOL = os.path.join(os.path.dirname(__file__), "시간표도구", "개강안내.html")
 
@@ -26,26 +26,23 @@ def _consultant_inject(consultant, discord=None, gyeokil=None):
 
 SYNC_PREFIX = "[동기화]"   # 인트라넷 동기화로 받은 시간표 파일 이름 앞머리 (재동기화 때 이것만 교체)
 
-def run_sync(cred=None, months=3):
-    """🔄 동기화 버튼: 인트라넷 기간시간표 xlsx(지점×월×평일/주말) + 디스코드 초대코드 + 격일 달력 → DB 저장(팀 공유).
-    cred=(아이디, 비번) 담당자 계정 — 없으면 Secrets 공용 계정(INTRANET_ID/PW).
+# 인트라넷 시간표는 서버가 아니라 '버튼 누른 사람의 브라우저'가 받는다 (인트라넷이 해외 서버 접속 차단 → Cloud 타임아웃).
+_intranet_fetch = components.declare_component(
+    "intranet_fetch", path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "intranet_component"))
+
+def run_sync(intra=None, who=None, uid=None):
+    """🔄 동기화: 브라우저가 받아온 인트라넷 기간시간표(intra={files:[{name,b64}], places} 또는 {error}) +
+    디스코드 초대코드 + 격일 달력 → DB 저장(팀 공유). intra=None 이면 비밀번호 미입력 → 인트라넷만 건너뜀.
     부분 실패해도 되는 건 저장하고 결과 메시지 목록을 돌려준다. DB 쓰기는 한 번에 모아 GitHub 백업 1회."""
     now = datetime.now(KST)
     msgs, files, extra = [], None, {}
-    uid, pw = cred or (None, None)
-    if not (uid and pw):
-        try:
-            uid, pw = st.secrets.get("INTRANET_ID"), st.secrets.get("INTRANET_PW")
-        except Exception:
-            uid = pw = None
-    if not (uid and pw):
-        msgs.append(("warning", "인트라넷: 저장된 담당자 계정도, Secrets 공용 계정도 없어 건너뜀 (아래 🔐 인트라넷 계정에서 저장)"))
+    if intra is None:
+        msgs.append(("info", "인트라넷: 비밀번호를 안 넣어 시간표는 건너뜀 (디스코드·격일만 갱신)"))
+    elif intra.get("error"):
+        msgs.append(("error", f"인트라넷: {intra['error']}"))
     else:
-        try:
-            files, places = intranet_sync.sync(uid, pw, now.date(), months)
-            msgs.append(("success", f"인트라넷 시간표 {len(files)}개 ({', '.join(places)} · {months}개월 · 평일/주말)"))
-        except Exception as e:
-            msgs.append(("error", f"인트라넷: {e}"))
+        files = [(f["name"], f["b64"]) for f in intra.get("files") or [] if str(f.get("b64", "")).startswith("UEsD")]  # xlsx(zip)
+        msgs.append(("success", f"인트라넷 시간표 {len(files)}개 ({', '.join(intra.get('places') or [])} · 평일/주말)"))
     for key, label, fn in (("sync_discord", "디스코드 초대코드", sheets_live.discord_codes),
                            ("sync_gyeokil", "격일 달력시간표", lambda: sheets_live.gyeokil_blocks((now.year, now.month)))):
         try:
@@ -53,13 +50,15 @@ def run_sync(cred=None, months=3):
             msgs.append(("success", f"{label} {len(extra[key])}건"))
         except Exception as e:
             msgs.append(("error", f"{label}: {e}"))
-    import base64
     with _db_lock:
         db = get_db()
         if files:
             db.execute("DELETE FROM tt_upload WHERE name LIKE ?", (SYNC_PREFIX + "%",))
             db.executemany("INSERT OR REPLACE INTO tt_upload(name,content_b64,uploaded_at) VALUES(?,?,?)",
-                           [(SYNC_PREFIX + n, base64.b64encode(b).decode(), int(time.time())) for n, b in files])
+                           [(SYNC_PREFIX + n, b, int(time.time())) for n, b in files])
+            if who and uid:   # 로그인 성공한 아이디는 그 담당자 것으로 기억 (다음엔 자동 채움)
+                db.execute("INSERT INTO intranet_id(name,user_id) VALUES(?,?) "
+                           "ON CONFLICT(name) DO UPDATE SET user_id=excluded.user_id", (who, uid))
         for k, v in {**{k: json.dumps(v, ensure_ascii=False) for k, v in extra.items()},
                      "sync_at": now.strftime("%Y-%m-%d %H:%M"), "sync_msgs": json.dumps(msgs, ensure_ascii=False)}.items():
             db.execute("INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
@@ -549,12 +548,11 @@ def get_db():
         email TEXT DEFAULT '',
         sort INTEGER DEFAULT 0);
 
-    -- 담당자별 인트라넷 계정 (동기화용). 비밀번호는 Secrets 기반 키로 암호화 — GitHub DB 백업에 평문 없음
-    CREATE TABLE IF NOT EXISTS intranet_cred(
+    -- 담당자별 인트라넷 아이디 (동기화 칸 자동 채움). 비밀번호는 저장하지 않는다 — 동기화 때마다 입력.
+    DROP TABLE IF EXISTS intranet_cred;   -- 이전 판(암호화 비번 저장) 폐기
+    CREATE TABLE IF NOT EXISTS intranet_id(
         name TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        pw_enc TEXT NOT NULL,
-        updated_at INTEGER DEFAULT 0);
+        user_id TEXT NOT NULL);
 
     CREATE TABLE IF NOT EXISTS memo_tpl(
         key TEXT PRIMARY KEY,
@@ -698,45 +696,9 @@ def clear_tt_uploads():
 _CONSULT_SEED = dict(name="", phone="042-710-8921", mobile="010-2394-6693",
                      email="dkswo1215@koreaedugroup.com")
 
-# ── 담당자별 인트라넷 계정 (암호화 저장) ──
-def _cred_fernet():
-    """Secrets 값에서 암호화 키 유도 (CRED_KEY 우선, 없으면 Cloud에 이미 있는 GITHUB_TOKEN 등).
-    ponytail: 키로 쓰는 Secret이 바뀌면 저장된 비번은 못 풀어 → 각자 다시 저장하면 됨 (CRED_KEY 를 따로 두면 안전)."""
-    import base64
-    from cryptography.fernet import Fernet
-    for k in ("CRED_KEY", "GITHUB_TOKEN", "GEMINI_API_KEY"):
-        try:
-            v = st.secrets.get(k)
-        except Exception:
-            v = None
-        if v:
-            return Fernet(base64.urlsafe_b64encode(hashlib.sha256(("intranet-cred:" + str(v)).encode()).digest()))
-    return None
-
-def save_intranet_cred(name, user_id, password):
-    f = _cred_fernet()
-    if not f:
-        raise RuntimeError("암호화 키로 쓸 Secrets(CRED_KEY 등)가 없어 저장할 수 없어요")
-    run("INSERT INTO intranet_cred(name,user_id,pw_enc,updated_at) VALUES(?,?,?,?) "
-        "ON CONFLICT(name) DO UPDATE SET user_id=excluded.user_id, pw_enc=excluded.pw_enc, updated_at=excluded.updated_at",
-        (name, user_id.strip(), f.encrypt(password.encode()).decode(), int(time.time())))
-
-def get_intranet_cred(name):
-    """→ (아이디, 비번) 또는 None (없거나 키가 바뀌어 못 풂)."""
-    rows = q("SELECT user_id, pw_enc FROM intranet_cred WHERE name=?", (name,))
-    f = _cred_fernet()
-    if not rows or not f:
-        return None
-    try:
-        return rows[0][0], f.decrypt(rows[0][1].encode()).decode()
-    except Exception:
-        return None
-
-def intranet_cred_ids():
-    return dict(q("SELECT name, user_id FROM intranet_cred"))
-
-def del_intranet_cred(name):
-    run("DELETE FROM intranet_cred WHERE name=?", (name,))
+# ── 담당자별 인트라넷 아이디 (비밀번호는 저장 안 함) ──
+def intranet_ids():
+    return dict(q("SELECT name, user_id FROM intranet_id"))
 
 def get_consultants():
     rows = q("SELECT name, phone, mobile, email, sort FROM consultant ORDER BY sort, name")
@@ -2193,46 +2155,43 @@ if page == "📋 할 일 공유":
 # DB에 저장한 업로드분(tt_upload)을 preload로 주입해 팀원 모두 같은 시간표를 쓴다.
 if page == "📅 시간표":
     # ── 🔄 동기화: 누를 때만 인트라넷·구글시트를 읽어 DB에 저장 (팀 공유). 평소엔 저장분만 씀 ──
-    # 동기화 계정 = 아래 '담당자'로 고른 사람의 저장된 인트라넷 계정 (없으면 Secrets 공용 계정)
+    # 인트라넷 아이디 = 아래 '담당자'로 고른 사람의 저장된 아이디(자동 채움). 비밀번호는 매번 입력, 저장 안 함.
     _cs_all = get_consultants()
     _me = _cs_all[min(st.session_state.get("tt_consultant_sel", 0), len(_cs_all) - 1)]["name"]
-    _ids = intranet_cred_ids()
-    _sc1, _sc2 = st.columns([1, 3])
-    if _sc1.button("🔄 동기화", type="primary", use_container_width=True,
-                   help="인트라넷 강의시간표(이번 달부터 3개월, 평일/주말) + 비대면 디스코드 코드 + 격일 달력시간표를 새로 가져옵니다"):
-        with st.spinner("인트라넷 · 구글시트에서 가져오는 중… (30초 안팎)"):
-            st.session_state["sync_result"] = run_sync(get_intranet_cred(_me))
-        st.rerun()
+    _ids = intranet_ids()
     _sat = get_state("sync_at")
-    _sc2.caption((f"마지막 동기화: **{_sat}** (팀 공유)" if _sat else
-                  "아직 동기화 안 함 — **🔄 동기화**를 누르면 인트라넷 시간표·디스코드 코드·격일 달력을 가져옵니다.")
-                 + (f" · 인트라넷 계정: **{_me}** (`{_ids[_me]}`)" if _me in _ids else " · 인트라넷 계정: 공용(Secrets)"))
+    st.caption(f"마지막 동기화: **{_sat}** (팀 공유)" if _sat else
+               "아직 동기화 안 함 — 인트라넷 비밀번호를 넣고 **🔄 동기화**를 누르면 인트라넷 시간표·디스코드 코드·격일 달력을 가져옵니다.")
+    with st.form("sync_form", clear_on_submit=True, border=False):
+        _f1, _f2, _f3 = st.columns([1.2, 1.2, 1])
+        _uid = _f1.text_input("인트라넷 아이디", value=_ids.get(_me, ""),
+                              help=f"담당자 '{_me or '(이름 없음)'}'의 아이디 — 동기화에 성공하면 기억해 둡니다")
+        _pw = _f2.text_input("인트라넷 비밀번호", type="password", help="저장하지 않아요. 비우고 누르면 디스코드·격일 달력만 갱신")
+        _f3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        _go = _f3.form_submit_button("🔄 동기화", type="primary", use_container_width=True)
+    if _go:
+        if _uid.strip() and _pw:
+            import uuid
+            st.session_state["sync_job"] = {"id": uuid.uuid4().hex, "uid": _uid.strip(), "pw": _pw, "who": _me}
+        else:
+            with st.spinner("구글시트에서 가져오는 중…"):
+                st.session_state["sync_result"] = run_sync(None)
+        st.rerun()
+    _job = st.session_state.get("sync_job")
+    if _job:   # 브라우저가 인트라넷에서 받아 돌려줄 때까지 (보통 10~30초)
+        _jc1, _jc2 = st.columns([4, 1])
+        with _jc1:
+            _val = _intranet_fetch(run_id=_job["id"], uid=_job["uid"], pw=_job["pw"], months=3, place_filter="대전",
+                                   start=datetime.now(KST).date().isoformat(), key="intranet_fetch", default=None)
+        if _jc2.button("취소", key="sync_cancel"):
+            st.session_state.pop("sync_job", None); st.rerun()
+        if _val and _val.get("run_id") == _job["id"]:
+            st.session_state.pop("sync_job", None)
+            with st.spinner("저장 중…"):
+                st.session_state["sync_result"] = run_sync(_val, _job["who"], _job["uid"])
+            st.rerun()
     for _lv, _m in st.session_state.pop("sync_result", None) or []:
         getattr(st, _lv)(_m)
-
-    with st.expander("🔐 인트라넷 계정 (담당자별 · 암호화 저장)", expanded=not _ids):
-        st.caption("담당자마다 자기 인트라넷 아이디·비밀번호를 저장해 두면, 아래 **담당자**로 자신을 고르고 🔄 동기화할 때 그 계정으로 로그인합니다. "
-                   "비밀번호는 암호화돼 저장되고 화면에 다시 보이지 않습니다. 비밀번호를 바꿨으면 여기서 다시 저장하세요.")
-        _names = [c["name"] for c in _cs_all if c["name"]]
-        if _names:
-            _ic1, _ic2, _ic3 = st.columns([1.2, 1, 1])
-            _who = _ic1.selectbox("담당자", _names, index=_names.index(_me) if _me in _names else 0, key="cred_who")
-            _iid = _ic2.text_input("인트라넷 아이디", value=_ids.get(_who, ""), key=f"cred_id_{_who}")
-            _ipw = _ic3.text_input("비밀번호", type="password", key=f"cred_pw_{_who}")
-            _b1, _b2, _b3 = st.columns([1, 1, 2])
-            if _b1.button("💾 저장", key="cred_save", disabled=not (_iid.strip() and _ipw)):
-                try:
-                    intranet_sync.login(_iid.strip(), _ipw)   # 저장 전에 실제 로그인으로 확인
-                    save_intranet_cred(_who, _iid, _ipw)
-                    st.success(f"{_who} 계정 저장됨 (로그인 확인 완료)")
-                    st.session_state.pop(f"cred_pw_{_who}", None); st.rerun()
-                except Exception as e:
-                    st.error(f"저장 안 됨: {e}")
-            if _who in _ids and _b2.button("🗑 삭제", key="cred_del"):
-                del_intranet_cred(_who); st.rerun()
-            st.caption("저장된 계정: " + (", ".join(f"{n}(`{i}`)" for n, i in _ids.items()) or "없음"))
-        else:
-            st.info("먼저 아래 **👤 담당자 명단 관리**에서 담당자 이름을 추가하세요.")
     _ups = tt_uploads()
     _sample = os.path.join(os.path.dirname(__file__), "시간표도구", "data", "시간표.xls")
     if not _ups and os.path.exists(_sample) and st.checkbox("샘플 시간표로 먼저 써보기 (data/시간표.xls)", key="tt_sample"):
